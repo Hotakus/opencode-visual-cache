@@ -120,6 +120,7 @@ const ZH_T = {
   balErr401:  "API Key 无效",
   balErr403:  "余额查询被拒绝",
   balErrEmpty:"未获取到余额数据",
+  balErrTimeout: "查询超时",
 } as const
 
 const EN_T = {
@@ -159,6 +160,7 @@ const EN_T = {
   balErr401:  "Invalid API Key",
   balErr403:  "Balance request rejected",
   balErrEmpty:"No balance data",
+  balErrTimeout: "Request timed out",
 } as const
 
 // ── color helpers ────────────────────────────────────────────────
@@ -364,9 +366,10 @@ interface BalanceState {
 
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
 
-async function fetchDeepSeekBalance(apiKey: string): Promise<DeepSeekBalance[]> {
+async function fetchDeepSeekBalance(apiKey: string, signal?: AbortSignal): Promise<DeepSeekBalance[]> {
   const res = await fetch("https://api.deepseek.com/user/balance", {
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    signal,
   })
   if (!res.ok) {
     if (res.status === 401) throw new Error("401")
@@ -523,6 +526,8 @@ function TokenCachePanel(props: {
   const [balanceState, setBalanceState] = createSignal<BalanceState>({
     status: "idle", data: null, lastFetch: 0,
   })
+  // 请求序号：防止定时轮询与手动刷新并发时，慢的旧请求覆盖新结果
+  let balanceSeq = 0
 
   const pollBalance = async () => {
     const key = props.api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
@@ -531,19 +536,32 @@ function TokenCachePanel(props: {
     const prev = balanceState()
     // key 已更换（重新输入）→ 强制重新查询，绕过缓存
     if (prev.status === "ok" && prev.key === key && now - prev.lastFetch < BALANCE_POLL_MS) return // cache still fresh
+    const seq = ++balanceSeq
     setBalanceState({ ...prev, status: "loading", error: undefined, key })
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
     try {
-      const data = await fetchDeepSeekBalance(key)
+      const data = await fetchDeepSeekBalance(key, controller.signal)
+      clearTimeout(timer)
+      if (seq !== balanceSeq) return // 已被更新的请求取代，丢弃过期结果
       setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
     } catch (err) {
-      const code = err instanceof Error ? err.message : ""
-      setBalanceState({ ...prev, status: "error", error: code, key })
-    }  }
+      clearTimeout(timer)
+      if (seq !== balanceSeq) return
+      const code = timedOut ? "TIMEOUT" : (err instanceof Error ? err.message : "")
+      // 失败时清空旧数据，避免显示过期余额
+      setBalanceState({ status: "error", data: null, lastFetch: 0, error: code, key })
+    }
+  }
 
   // Re-fetch when the API key is (re)configured via /cache-balance-key.
+  // 注意：pollBalance 内部读写 balanceState 信号，若不做 untrack 包裹，
+  // effect 会追踪 balanceState 的变化并与 pollBalance 的 setBalanceState
+  // 形成无限循环（每次重跑都发起新的 fetch 请求）。
   createEffect(() => {
     void balanceRefresh()
-    pollBalance()
+    untrack(() => { void pollBalance() })
   })
 
   // ── auto-clear override when the user navigates to a different main session ──
@@ -804,7 +822,6 @@ function TokenCachePanel(props: {
     const unsubMsg = props.api.event.on("message.updated", () => { bumpPartVersion(); setRefreshTick(v => v + 1) })
     const unsubSession = props.api.event.on("session.updated", () => { setRefreshTick(v => v + 1) })
     setRefreshTick(v => v + 1)
-    pollBalance()
     const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
     onCleanup(() => { clearTimeout(partTimer); clearInterval(balanceTimer); unsubPart(); unsubMsg(); unsubSession() })
   })
@@ -1115,6 +1132,7 @@ function TokenCachePanel(props: {
                   if (code === "401") return t().balErr401
                   if (code === "403") return t().balErr403
                   if (code === "EMPTY") return t().balErrEmpty
+                  if (code === "TIMEOUT") return t().balErrTimeout
                   return t().balError + (code ? ` (${code})` : "")
                 })()}</span>
               </text>
