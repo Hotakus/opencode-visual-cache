@@ -113,6 +113,13 @@ const ZH_T = {
   secDetail:  "明细",
   secModel:   "模型",
   secSkills:  "已加载技能",
+  balTotal:   "总余额:",
+  balNoKey:   "未配置 API Key",
+  balLoading: "查询中...",
+  balError:   "查询失败",
+  balErr401:  "API Key 无效",
+  balErr403:  "余额查询被拒绝",
+  balErrEmpty:"未获取到余额数据",
 } as const
 
 const EN_T = {
@@ -145,6 +152,13 @@ const EN_T = {
   secDetail:  "Detail",
   secModel:   "Model",
   secSkills:  "Loaded Skills",
+  balTotal:   "Total:",
+  balNoKey:   "No API Key set",
+  balLoading: "Fetching...",
+  balError:   "Fetch failed",
+  balErr401:  "Invalid API Key",
+  balErr403:  "Balance request rejected",
+  balErrEmpty:"No balance data",
 } as const
 
 // ── color helpers ────────────────────────────────────────────────
@@ -332,6 +346,63 @@ interface TokenDist {
 }
 
 // ---------------------------------------------------------------------------
+// DeepSeek Balance
+// ---------------------------------------------------------------------------
+
+interface DeepSeekBalance {
+  currency: string
+  total: string
+}
+
+interface BalanceState {
+  status: "idle" | "loading" | "ok" | "error"
+  data: DeepSeekBalance[] | null
+  lastFetch: number
+  error?: string
+  key?: string           // 上次成功/尝试查询所用的 key，用于检测 key 是否更换
+}
+
+const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
+
+async function fetchDeepSeekBalance(apiKey: string): Promise<DeepSeekBalance[]> {
+  const res = await fetch("https://api.deepseek.com/user/balance", {
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+  })
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("401")
+    if (res.status === 402 || res.status === 403) throw new Error("403")
+    throw new Error(String(res.status))
+  }
+  const json = await res.json() as {
+    is_available?: boolean
+    balance_infos?: { currency: string; total_balance: string; granted_balance: string; topped_up_balance: string }[]
+  }
+  const infos = json.balance_infos ?? []
+  if (infos.length === 0) throw new Error("EMPTY")
+  return infos.map((info) => ({
+    currency: info.currency ?? "CNY",
+    total: info.total_balance ?? "0",
+  }))
+}
+
+/**
+ * 将余额从来源币种换算为目标币种。
+ * DEFAULT_RATES 以 USD=1 为基准：先折算为 USD，再换算到目标币种。
+ */
+function convertBalance(target: string, targetRate: number, amount: number, from: string): number {
+  if (from === target) return amount
+  const fromRate = DEFAULT_RATES[from] ?? 1
+  const usd = from === "USD" ? amount : amount / fromRate
+  return target === "USD" ? usd : usd * targetRate
+}
+
+/** 货币符号：优先取 /cache-currency 内置映射，未知币种回退为代码。 */
+function balanceSymbol(currency: string): string {
+  const sym = CURRENCIES[currency]
+  return sym ?? currency + " "
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar component
 // ---------------------------------------------------------------------------
 
@@ -353,6 +424,14 @@ interface PanelSignals {
   setSectionDist: (v: boolean) => void
   sectionSkills: () => boolean
   setSectionSkills: (v: boolean) => void
+  sectionBalance: () => boolean
+  setSectionBalance: (v: boolean) => void
+  /** Increment to force a DeepSeek balance re-fetch. */
+  balanceRefresh: () => number
+  setBalanceRefresh: (v: number) => void
+  /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
+  balanceCurrency: () => string
+  setBalanceCurrency: (v: string) => void
   borderVisible: () => boolean
   setBorderVisible: (v: boolean) => void
   /** When set, the panel renders stats for this session instead of the main one. */
@@ -404,6 +483,9 @@ function TokenCachePanel(props: {
     sectionModel, setSectionModel,
     sectionDist, setSectionDist,
     sectionSkills, setSectionSkills,
+    sectionBalance, setSectionBalance,
+    balanceRefresh,
+    balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
   } = props.signals
 
@@ -436,6 +518,33 @@ function TokenCachePanel(props: {
     hasSkills: false,
   })
   const [refreshTick, setRefreshTick] = createSignal(0)
+
+  // ── balance state + polling ──────────────────────────────────
+  const [balanceState, setBalanceState] = createSignal<BalanceState>({
+    status: "idle", data: null, lastFetch: 0,
+  })
+
+  const pollBalance = async () => {
+    const key = props.api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
+    if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
+    const now = Date.now()
+    const prev = balanceState()
+    // key 已更换（重新输入）→ 强制重新查询，绕过缓存
+    if (prev.status === "ok" && prev.key === key && now - prev.lastFetch < BALANCE_POLL_MS) return // cache still fresh
+    setBalanceState({ ...prev, status: "loading", error: undefined, key })
+    try {
+      const data = await fetchDeepSeekBalance(key)
+      setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
+    } catch (err) {
+      const code = err instanceof Error ? err.message : ""
+      setBalanceState({ ...prev, status: "error", error: code, key })
+    }  }
+
+  // Re-fetch when the API key is (re)configured via /cache-balance-key.
+  createEffect(() => {
+    void balanceRefresh()
+    pollBalance()
+  })
 
   // ── auto-clear override when the user navigates to a different main session ──
   let lastMainSid = props.sessionId
@@ -634,10 +743,13 @@ function TokenCachePanel(props: {
         const rate = props.api.kv.get<number>(`${KV_PREFIX}.rate`)
         if (typeof sym === "string") setCurrencySymbol(sym)
         if (typeof rate === "number" && rate > 0) setExchangeRate(rate)
+        const balCur = props.api.kv.get<string>(`${KV_PREFIX}.balance_currency`)
+        if (typeof balCur === "string") setBalanceCurrency(balCur)
         setSectionDetail(Boolean(props.api.kv.get(`${KV_PREFIX}.section.detail`, true)))
         setSectionModel(Boolean(props.api.kv.get(`${KV_PREFIX}.section.model`, true)))
         setSectionDist(Boolean(props.api.kv.get(`${KV_PREFIX}.section.dist`, true)))
         setSectionSkills(Boolean(props.api.kv.get(`${KV_PREFIX}.section.skills`, true)))
+        setSectionBalance(Boolean(props.api.kv.get(`${KV_PREFIX}.section.balance`, true)))
         const bv = props.api.kv.get<boolean>(`${KV_PREFIX}.border`, true)
         setBorderVisible(bv !== false)
         // Restore language preference
@@ -692,7 +804,9 @@ function TokenCachePanel(props: {
     const unsubMsg = props.api.event.on("message.updated", () => { bumpPartVersion(); setRefreshTick(v => v + 1) })
     const unsubSession = props.api.event.on("session.updated", () => { setRefreshTick(v => v + 1) })
     setRefreshTick(v => v + 1)
-    onCleanup(() => { clearTimeout(partTimer); unsubPart(); unsubMsg(); unsubSession() })
+    pollBalance()
+    const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
+    onCleanup(() => { clearTimeout(partTimer); clearInterval(balanceTimer); unsubPart(); unsubMsg(); unsubSession() })
   })
 
   // ── colours ──
@@ -977,6 +1091,64 @@ function TokenCachePanel(props: {
             </Show>
           </Show>
           </Show>
+
+          {/* ── DeepSeek balance (single line) ── */}
+          <Show when={sectionBalance()}>
+            <text fg={pal().muted}>{sep()}</text>
+            <Show when={balanceState().status === "idle"}>
+              <text fg={pal().muted}>
+                <span style={{ fg: pal().muted }}>{"> "}</span>
+                <span>{t().balNoKey}</span>
+              </text>
+            </Show>
+            <Show when={balanceState().status === "loading"}>
+              <text fg={pal().muted}>
+                <span style={{ fg: pal().muted }}>{"> "}</span>
+                <span>{t().balLoading}</span>
+              </text>
+            </Show>
+            <Show when={balanceState().status === "error"}>
+              <text fg={pal().error}>
+                <span style={{ fg: pal().muted }}>{"> "}</span>
+                <span>{(() => {
+                  const code = balanceState().error
+                  if (code === "401") return t().balErr401
+                  if (code === "403") return t().balErr403
+                  if (code === "EMPTY") return t().balErrEmpty
+                  return t().balError + (code ? ` (${code})` : "")
+                })()}</span>
+              </text>
+            </Show>
+            <Show when={balanceState().status === "ok" && balanceState().data}>
+              {(() => {
+                const list = balanceState().data!
+                const pref = balanceCurrency()
+                // 偏好币种是 DeepSeek 原生返回的（CNY/USD）→ 直接显示
+                const native = pref ? list.find(x => x.currency === pref) : undefined
+                if (native) {
+                  return (
+                    <text fg={pal().text}>
+                      {justify(t().balTotal, balanceSymbol(native.currency) + native.total)}
+                    </text>
+                  )
+                }
+                // 非原生币种（EUR/JPY/GBP/KRW…）→ 取第一条余额按汇率换算
+                const base = list[0]
+                const baseAmt = parseFloat(base.total)
+                const converted = Number.isFinite(baseAmt)
+                  ? convertBalance(pref || base.currency, exchangeRate(), baseAmt, base.currency)
+                  : baseAmt
+                const shown = pref && base.currency !== pref
+                  ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
+                  : base.total
+                return (
+                  <text fg={pal().text}>
+                    {justify(t().balTotal, balanceSymbol(pref || base.currency) + shown)}
+                  </text>
+                )
+              })()}
+            </Show>
+          </Show>
         </Show>
       </Show>
     </box>
@@ -1022,6 +1194,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionModel, setSectionModel] = createSignal(true)
   const [sectionDist, setSectionDist] = createSignal(true)
   const [sectionSkills, setSectionSkills] = createSignal(true)
+  const [sectionBalance, setSectionBalance] = createSignal(true)
+  const [balanceRefresh, setBalanceRefresh] = createSignal(0)
+  const [balanceCurrency, setBalanceCurrency] = createSignal("")
   const [borderVisible, setBorderVisible] = createSignal(true)
   const [langZH, setLangZH] = createSignal(LANG_ZH)
   const [overrideSessionId, setOverrideSessionId] = createSignal<string | undefined>(undefined)
@@ -1034,6 +1209,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     sectionModel, setSectionModel,
     sectionDist, setSectionDist,
     sectionSkills, setSectionSkills,
+    sectionBalance, setSectionBalance,
+    balanceRefresh, setBalanceRefresh,
+    balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
     overrideSessionId, setOverrideSessionId,
   }
@@ -1061,6 +1239,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               const defRate = DEFAULT_RATES[opt.value] ?? 1
               api.kv.set(`${KV_PREFIX}.currency`, sym)
               api.kv.set(`${KV_PREFIX}.rate`, defRate)
+              // 同步余额显示币种偏好：CNY/USD 原生直显，其余币种按汇率换算
+              api.kv.set(`${KV_PREFIX}.balance_currency`, opt.value)
+              signals.setBalanceCurrency(opt.value)
               signals.setCurrencySymbol(sym)
               signals.setExchangeRate(defRate)
               api.ui.toast({ message: `Currency: ${opt.value} (${sym}), rate: ${defRate}` })
@@ -1105,6 +1286,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         const modelOn  = Boolean(api.kv.get(`${KV_PREFIX}.section.model`, true))
         const distOn   = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
         const skillsOn = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
+        const balanceOn = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
         const borderOn = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
         dialog?.replace(() => (
           <api.ui.DialogSelect
@@ -1114,6 +1296,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               { title: `Model & Pricing [${modelOn  ? "ON" : "OFF"}]`,  value: "model" },
               { title: `Token Dist.     [${distOn   ? "ON" : "OFF"}]`,  value: "dist" },
               { title: `Loaded Skills   [${skillsOn ? "ON" : "OFF"}]`,  value: "skills" },
+              { title: `DS Balance      [${balanceOn ? "ON" : "OFF"}]`, value: "balance" },
               { title: `Panel Border    [${borderOn ? "ON" : "OFF"}]`,  value: "border" },
             ]}
             onSelect={(opt) => {
@@ -1130,6 +1313,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 if (opt.value === "model")  signals.setSectionModel(!cur)
                 if (opt.value === "dist")   signals.setSectionDist(!cur)
                 if (opt.value === "skills") signals.setSectionSkills(!cur)
+                if (opt.value === "balance") signals.setSectionBalance(!cur)
                 api.ui.toast({ message: `${opt.value} section ${!cur ? "shown" : "hidden"}` })
               }
               dialog?.clear()
@@ -1150,9 +1334,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         const model = Boolean(api.kv.get(`${KV_PREFIX}.section.model`, true))
         const dist = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
         const skills = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
+        const balance = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
         api.ui.toast({
           title: "Cache Panel Config",
-          message: `Currency: ${sym}  |  Rate: ${rate}  |  Detail: ${detail ? "ON" : "OFF"}  |  Model: ${model ? "ON" : "OFF"}  |  Dist: ${dist ? "ON" : "OFF"}  |  Skills: ${skills ? "ON" : "OFF"}`,
+          message: `Currency: ${sym}  |  Rate: ${rate}  |  Detail: ${detail ? "ON" : "OFF"}  |  Model: ${model ? "ON" : "OFF"}  |  Dist: ${dist ? "ON" : "OFF"}  |  Skills: ${skills ? "ON" : "OFF"}  |  Balance: ${balance ? "ON" : "OFF"}`,
           duration: 8000,
         })
         dialog?.clear()
@@ -1179,6 +1364,54 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               api.ui.toast({ message: zh ? "语言已切换为中文" : "Switched to English" })
               dialog?.clear()
             }}
+          />
+        ))
+      },
+    },
+    {
+      title: "Cache: Set DeepSeek API Key",
+      value: "cache.balance.key",
+      description: "Set or update the DeepSeek API key for balance display",
+      slash: { name: "cache-balance-key" },
+      onSelect: (dialog) => {
+        const zh = langZH()
+        const current = api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
+        // 已保存的 key 以脱敏形式预填：保留 "sk-" 前缀 + 头 5 尾 5 字符，中间用 * 填充
+        const maskKey = (k: string): string => {
+          if (!k) return ""
+          const prefix = k.startsWith("sk-") ? "sk-" : ""
+          const body = prefix ? k.slice(3) : k
+          if (body.length <= 10) return prefix + body.slice(0, 5) + "*".repeat(Math.max(3, body.length - 5))
+          return prefix + body.slice(0, 5) + "*".repeat(Math.max(3, body.length - 10)) + body.slice(-5)
+        }
+        const masked = maskKey(current)
+        dialog?.replace(() => (
+          <api.ui.DialogPrompt
+            title={zh ? "DeepSeek API Key" : "DeepSeek API Key"}
+            description={() => <text>{zh ? "输入 DeepSeek API Key 以显示账户余额（留空清除）" : "Enter your DeepSeek API key to show account balance (leave empty to clear)"}</text>}
+            placeholder="sk-..."
+            value={masked}
+            onConfirm={(val) => {
+              const input = val.trim()
+              // 空 → 清除；含 * （脱敏占位符残留）→ 视为未修改，保留原 key；否则为新 key
+              let key: string
+              if (input === "") {
+                key = ""
+              } else if (input.includes("*")) {
+                key = current
+              } else {
+                key = input
+              }
+              api.kv.set(`${KV_PREFIX}.ds_key`, key)
+              setBalanceRefresh(v => v + 1)
+              if (key) {
+                api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
+              } else {
+                api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
+              }
+              dialog?.clear()
+            }}
+            onCancel={() => dialog?.clear()}
           />
         ))
       },
