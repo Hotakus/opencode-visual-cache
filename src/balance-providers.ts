@@ -19,6 +19,36 @@ export interface BalanceProvider {
   fetchBalance(apiKey: string, signal?: AbortSignal): Promise<BalanceEntry[]>
 }
 
+const siliconflowProvider: BalanceProvider = {
+  id: "siliconflow",
+  name: "SiliconFlow",
+  keyPlaceholder: "sk-...",
+  async fetchBalance(apiKey, signal) {
+    // 国内站 api.siliconflow.cn（CNY）；国际站为 api.siliconflow.com（USD）
+    const res = await fetch("https://api.siliconflow.cn/v1/user/info", {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      signal,
+    })
+    if (!res.ok) {
+      if (res.status === 401) throw new BalanceError("401")
+      if (res.status === 403) throw new BalanceError("403")
+      throw new BalanceError(String(res.status))
+    }
+    const json = await res.json() as {
+      status?: boolean
+      data?: {
+        balance?: string | number
+        chargeBalance?: string | number
+        totalBalance?: string | number
+      }
+    }
+    // totalBalance 为总余额（含充值+赠送），缺失时回退 balance
+    const total = json.data?.totalBalance ?? json.data?.balance
+    if (typeof total === "undefined" || total === null) throw new BalanceError("EMPTY")
+    return [{ currency: "CNY", total: String(total) }]
+  },
+}
+
 const deepseekProvider: BalanceProvider = {
   id: "deepseek",
   name: "DeepSeek",
@@ -47,7 +77,7 @@ const deepseekProvider: BalanceProvider = {
 }
 
 /** 已注册的 provider 列表（按需追加新适配器）。 */
-export const balanceProviders: BalanceProvider[] = [deepseekProvider]
+export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider]
 
 /** 按 id 取 provider；未知 id 回退到第一个。 */
 export function getBalanceProvider(id: string): BalanceProvider {
