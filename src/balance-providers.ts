@@ -76,8 +76,33 @@ const deepseekProvider: BalanceProvider = {
   },
 }
 
+const openrouterProvider: BalanceProvider = {
+  id: "openrouter",
+  name: "OpenRouter",
+  keyPlaceholder: "sk-or-...",
+  async fetchBalance(apiKey, signal) {
+    // 官方文档标注需 Management key，实测普通 API key 亦可查询账户余额
+    const res = await fetch("https://openrouter.ai/api/v1/credits", {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      signal,
+    })
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) throw new BalanceError("403")
+      throw new BalanceError(String(res.status))
+    }
+    const json = await res.json() as {
+      data?: { total_credits?: number; total_usage?: number }
+    }
+    const credits = json.data?.total_credits
+    const usage = json.data?.total_usage
+    if (typeof credits !== "number" || typeof usage !== "number") throw new BalanceError("EMPTY")
+    // 剩余额度 = 充值总额 - 已用
+    return [{ currency: "USD", total: (credits - usage).toFixed(2) }]
+  },
+}
+
 /** 已注册的 provider 列表（按需追加新适配器）。 */
-export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider]
+export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider]
 
 /** 按 id 取 provider；未知 id 回退到第一个。 */
 export function getBalanceProvider(id: string): BalanceProvider {
