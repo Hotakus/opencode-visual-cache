@@ -19,7 +19,7 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, untrack } from "solid-js"
 import { PLUGIN_VERSION } from "./_version"
-import { balanceProviders, getBalanceProvider, maskKey, type BalanceEntry } from "./balance-providers"
+import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry } from "./balance-providers"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -409,6 +409,9 @@ interface PanelSignals {
   /** Currently selected balance provider id (e.g. "deepseek"). */
   balanceProviderId: () => string
   setBalanceProviderId: (v: string) => void
+  /** Auto-follow the session's provider for balance display. Manual switch disables it. */
+  autoBalance: () => boolean
+  setAutoBalance: (v: boolean) => void
   /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
   balanceCurrency: () => string
   setBalanceCurrency: (v: string) => void
@@ -466,6 +469,7 @@ function TokenCachePanel(props: {
     sectionBalance, setSectionBalance,
     balanceRefresh,
     balanceProviderId, setBalanceProviderId,
+    autoBalance, setAutoBalance,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
   } = props.signals
@@ -544,6 +548,16 @@ function TokenCachePanel(props: {
   createEffect(() => {
     void balanceRefresh()
     untrack(() => { void pollBalance() })
+  })
+
+  // 自动跟随当前会话的 provider（精确匹配）。手动切换会关闭此行为。
+  createEffect(() => {
+    if (!autoBalance()) return
+    const hit = matchBalanceProvider(data().providerName)
+    if (hit && hit.id !== balanceProviderId()) {
+      setBalanceProviderId(hit.id)
+      props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+    }
   })
 
   // ── auto-clear override when the user navigates to a different main session ──
@@ -750,6 +764,9 @@ function TokenCachePanel(props: {
         if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
           setBalanceProviderId(savedProvider)
         }
+        // Restore auto-follow (default on)
+        const savedAuto = props.api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
+        if (typeof savedAuto === "boolean") setAutoBalance(savedAuto)
         // Migrate legacy DeepSeek key (cache_panel.ds_key → cache_panel.balance.deepseek.key)
         const legacyKey = props.api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
         if (legacyKey) {
@@ -1211,6 +1228,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionBalance, setSectionBalance] = createSignal(true)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
+  const [autoBalance, setAutoBalance] = createSignal(true)
   const [balanceCurrency, setBalanceCurrency] = createSignal("")
   const [borderVisible, setBorderVisible] = createSignal(true)
   const [langZH, setLangZH] = createSignal(LANG_ZH)
@@ -1227,6 +1245,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     sectionBalance, setSectionBalance,
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
+    autoBalance, setAutoBalance,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
     overrideSessionId, setOverrideSessionId,
@@ -1386,25 +1405,42 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     },
     {
       title: "Cache: Switch Balance Provider",
-      value: "cache.balance.provider",
-      description: "Switch the balance provider for display",
-      slash: { name: "cache-balance-provider" },
+      value: "cache.balance",
+      description: "Switch balance provider or toggle auto-follow",
+      slash: { name: "cache-balance" },
       onSelect: (dialog) => {
         const zh = langZH()
         const current = signals.balanceProviderId()
+        const auto = signals.autoBalance()
+        const autoLabel = auto
+          ? (zh ? "自动跟随 [开]" : "Auto-follow [ON]")
+          : (zh ? "自动跟随 [关]" : "Auto-follow [OFF]")
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title={zh ? "选择余额提供商" : "Select Balance Provider"}
-            options={balanceProviders.map((p) => ({
-              title: p.name + (p.id === current ? " *" : ""),
-              value: p.id,
-            }))}
+            title={zh ? "余额提供商 / 自动跟随" : "Balance Provider / Auto-follow"}
+            options={[
+              { title: autoLabel, value: "__auto__" },
+              ...balanceProviders.map((p) => ({
+                title: p.name + (p.id === current ? " *" : ""),
+                value: p.id,
+              })),
+            ]}
             onSelect={(opt) => {
-              const provider = getBalanceProvider(opt.value)
-              api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
-              signals.setBalanceProviderId(provider.id)
-              signals.setBalanceRefresh(signals.balanceRefresh() + 1)
-              api.ui.toast({ message: zh ? `余额提供商: ${provider.name}` : `Balance provider: ${provider.name}` })
+              if (opt.value === "__auto__") {
+                const next = !auto
+                api.kv.set(`${KV_PREFIX}.balance.auto`, next)
+                signals.setAutoBalance(next)
+                api.ui.toast({ message: zh ? `自动跟随余额提供商: ${next ? "开" : "关"}` : `Auto-follow balance provider: ${next ? "ON" : "OFF"}` })
+              } else {
+                const provider = getBalanceProvider(opt.value)
+                // 手动切换会关闭自动跟随
+                api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
+                api.kv.set(`${KV_PREFIX}.balance.auto`, false)
+                signals.setBalanceProviderId(provider.id)
+                signals.setAutoBalance(false)
+                signals.setBalanceRefresh(signals.balanceRefresh() + 1)
+                api.ui.toast({ message: zh ? `余额提供商: ${provider.name}（自动跟随已关闭）` : `Balance provider: ${provider.name} (auto-follow off)` })
+              }
               dialog?.clear()
             }}
           />
@@ -1428,8 +1464,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
             }))}
             onSelect={(opt) => {
               const provider = getBalanceProvider(opt.value)
+              // 手动指定 provider 会关闭自动跟随
               api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
+              api.kv.set(`${KV_PREFIX}.balance.auto`, false)
               signals.setBalanceProviderId(provider.id)
+              signals.setAutoBalance(false)
               const current = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
               const masked = maskKey(current)
               // 步骤 2：输入 key（脱敏预填；空清除 / 含 * 保留原 key / 新 key 实时刷新）
