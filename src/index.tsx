@@ -1381,7 +1381,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               { title: `Model & Pricing [${modelOn  ? "ON" : "OFF"}]`,  value: "model" },
               { title: `Token Dist.     [${distOn   ? "ON" : "OFF"}]`,  value: "dist" },
               { title: `Loaded Skills   [${skillsOn ? "ON" : "OFF"}]`,  value: "skills" },
-              { title: `DS Balance      [${balanceOn ? "ON" : "OFF"}]`, value: "balance" },
+              { title: `Balance         [${balanceOn ? "ON" : "OFF"}]`, value: "balance" },
               { title: `Panel Border    [${borderOn ? "ON" : "OFF"}]`,  value: "border" },
             ]}
             onSelect={(opt) => {
