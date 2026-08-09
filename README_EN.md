@@ -50,6 +50,7 @@ Interested in sub-agent monitoring? Check out [opencode-subagent-magazine](https
 - **Persistent State**: Fold preferences and config remembered across restarts via api.kv
 - **Language**: Auto-detects system locale, with `/cache-lang` for runtime switching between Chinese and English — preference persisted across restarts
 - **Multi-currency**: Switch via `/cache-currency` — costs, savings, and per-million rates convert in real time
+- **Balance Query**: Query account balance across multiple AI providers, with auto-switch following the current session's provider
 - **Slash Commands**: `/cache-session` `/cache-session-back` `/cache-rate` `/cache-section` `/cache-config` `/cache-lang` for live panel configuration
 - **Sub-Agent Cache View**: `/cache-session` auto-scans and lists sub-agents; select one to switch the panel stats. Use `/cache-session-back` to return to the main session
 - **Loaded Skills**: Detects `skill` tool calls in the session and displays loaded skill names with estimated token footprint
@@ -105,9 +106,11 @@ The plugin supports slash commands and command palette (`Ctrl + P`) for runtime 
 | `/cache-session-back` | Return to main session | Switch back to main session from sub-agent cache view |
 | `/cache-currency` | Switch currency | Pick from a list (USD / CNY / EUR / JPY / GBP / KRW); default exchange rate auto-filled |
 | `/cache-rate` | Adjust exchange rate | Enter a custom rate (e.g. `7.2` for CNY) |
-| `/cache-section` | Toggle sections & border | Independently show/hide Detail, Model & Pricing, Token Distribution, Loaded Skills, or the panel border |
+| `/cache-section` | Toggle sections & border | Independently show/hide Detail, Model & Pricing, Token Distribution, Loaded Skills, Balance, or the panel border |
 | `/cache-config` | View current config | Displays currency, rate, and section visibility |
 | `/cache-lang` | Switch display language | Pick Chinese or English from the dialog — takes effect immediately, no restart needed |
+| `/cache-balance` | Balance query settings | Pick a balance provider / toggle auto-switch; selecting a provider without a key jumps straight into key setup |
+| `/cache-balance-key` | Set balance API key | Two-step flow: pick a provider → enter the API key |
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/Hotakus/opencode-visual-cache/master/assets/splash_cmd.png" alt="Slash command" width="49%"></img>
@@ -141,8 +144,30 @@ Three sub-sections can be toggled independently to save sidebar space:
 - **Model & Pricing**: cost / provider / model name / per-million rates
 - **Estimated Token Dist.**: per-role token breakdown
 - **Loaded Skills**: skill names the LLM actually loaded via the `skill` tool, with estimated token counts
+- **Balance**: the selected provider's account balance (multi-provider with auto-switch)
 
 Toggled via `/cache-section` — takes effect instantly, no restart required. The same command also toggles the panel **border**; turning it off removes the outline and padding so content fills the full width.
+
+### 4.4 Balance Query
+
+The panel can display account balance from multiple AI providers. Use `/cache-balance` to pick a provider and set its API key; with **auto-switch** enabled, the balance query follows the model provider of the current session automatically.
+
+Supported balance providers:
+
+| Provider | Balance endpoint | Currency | Key prefix | Status |
+|----------|-----------------|----------|------------|--------|
+| DeepSeek | `https://api.deepseek.com/user/balance` | CNY / USD | `sk-` | ✅ Supported |
+| SiliconFlow | `https://api.siliconflow.cn/v1/user/info` | CNY | `sk-` | ✅ Supported |
+| OpenRouter | `https://openrouter.ai/api/v1/credits` | USD | `sk-or-` | ✅ Supported |
+| Moonshot | `https://api.moonshot.cn/v1/users/me/balance` | CNY | `sk-` | ✅ Supported |
+| Zhipu GLM | Pending (community-reversed endpoint, unofficial) | CNY | — | ⏳ Planned |
+| xAI | Pending (requires Management Key + Team ID) | USD | — | ⏳ Planned |
+
+> **Key storage**: API keys are stored in plaintext in the plugin's persistent KV — avoid using on shared devices.
+>
+> **Auto-switch**: enabled by default; picking a provider manually disables it — re-enable anytime via `/cache-balance`. Providers without a key are skipped by auto-switch.
+>
+> **Planned**: candidates confirmed feasible by research, not yet implemented. Zhipu GLM only has a community-reversed unofficial endpoint (no stability guarantee).
 
 ---
 
