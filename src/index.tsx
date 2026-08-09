@@ -374,6 +374,25 @@ function convertBalance(target: string, targetRate: number, amount: number, from
   return target === "USD" ? usd : usd * targetRate
 }
 
+/**
+ * 从 OpenCode 已认证的 provider 读取 API key 作为余额查询的自动兜底。
+ * 匹配复用前缀逻辑：先精确匹配 id，再前缀匹配（如 moonshotai-cn → moonshot）。
+ * key 来源：auth.json（provider.key）或配置（provider.options.apiKey）。
+ * 仅当手动配置的 key 缺失时使用；读取失败或未匹配返回空串。
+ */
+function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
+  try {
+    const provs = api.state.provider as unknown as Array<{ id: string; key?: string; options?: { apiKey?: string } }>
+    const hit = provs.find((p) => p.id === provider.id) ?? provs.find((p) => p.id.startsWith(provider.id))
+    if (!hit) return ""
+    const k = typeof hit.key === "string" ? hit.key : ""
+    if (k) return k
+    return typeof hit.options?.apiKey === "string" ? hit.options.apiKey : ""
+  } catch {
+    return ""
+  }
+}
+
 /** 货币符号：优先取 /cache-currency 内置映射，未知币种回退为代码。 */
 function balanceSymbol(currency: string): string {
   const sym = CURRENCIES[currency]
@@ -517,7 +536,9 @@ function TokenCachePanel(props: {
 
   const pollBalance = async () => {
     const provider = getBalanceProvider(balanceProviderId())
+    // 手动配置的 key 优先；缺失时自动复用 OpenCode 已认证的 key（auth.json / config）
     const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+      || findOpencodeKey(props.api, provider)
     if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
     const now = Date.now()
     const prev = balanceState()
@@ -565,6 +586,14 @@ function TokenCachePanel(props: {
         pid = (m as AssistantMessage).providerID
         break
       }
+    }
+    // 会话尚无 assistant 消息（新会话 / 刚切换模型未对话 / 消息未加载）
+    // → 回退到会话级模型元数据，反映当前正在使用的 provider
+    if (!pid) {
+      try {
+        const session = props.api.state.session.get(sid)
+        pid = session?.model?.providerID ?? ""
+      } catch { /* ignore */ }
     }
     if (!pid) return
     const hit = matchBalanceProvider(pid)
