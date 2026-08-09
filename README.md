@@ -109,7 +109,7 @@ npm install -g opencode-visual-cache@latest
 | `/cache-section` | 开关区块与边框 | 独立控制 Token 明细 / 模型与定价 / 估算 Token 分布 / 已加载技能 / 余额 / 面板边框的显隐 |
 | `/cache-config` | 查看当前配置 | 弹出当前货币、汇率、区块可见性状态 |
 | `/cache-lang` | 切换显示语言 | 从列表选择中文或 English，界面即时切换，无需重启 |
-| `/cache-balance` | 余额查询设置 | 选择余额提供商 / 开关自动切换；选中未配置 Key 的提供商时直接进入 Key 设置 |
+| `/cache-balance` | 余额查询设置 | 选择余额提供商（菜单标注 Key 来源：用户 key / OpenCode / 未配置）/ 开关自动切换 |
 | `/cache-balance-key` | 设置余额 API Key | 两步流程：选择提供商 → 输入 API Key |
 
 <div align="center">
@@ -152,7 +152,7 @@ npm install -g opencode-visual-cache@latest
 
 ### 4.4 余额查询
 
-面板支持显示多家 AI 提供商的账户余额。通过 `/cache-balance` 选择提供商并设置 API Key；开启**自动切换**后，余额查询会跟随当前会话正在使用的模型提供商自动切换。
+面板支持显示多家 AI 提供商的账户余额。开启**自动切换**后，余额查询会跟随当前会话正在使用的模型提供商自动切换。
 
 已支持余额查询的提供商：
 
@@ -165,9 +165,11 @@ npm install -g opencode-visual-cache@latest
 | 智谱 GLM | 待接入（社区逆向端点，非官方） | CNY | — | ⏳ 希望支持 |
 | xAI | 待接入（需 Management Key + Team ID） | USD | — | ⏳ 希望支持 |
 
-> **Key 存储**：API Key 明文保存于插件持久化 KV，请勿在共享设备上使用。
+> **Key 来源**：优先使用 `/cache-balance-key` 手动配置的 Key；未手动配置时自动复用 OpenCode 已认证的凭据（`/connect` 配置的 provider）。两者都没有的提供商无法查询余额。
 >
-> **自动切换**：默认开启；手动选择提供商后自动关闭，可在 `/cache-balance` 中重新开启。未配置 Key 的提供商不参与自动切换。
+> **Key 存储**：手动配置的 API Key 明文保存于插件持久化 KV，请勿在共享设备上使用。
+>
+> **自动切换**：默认开启；手动选择提供商后自动关闭，可在 `/cache-balance` 中重新开启。自动切换按当前会话的模型提供商匹配，未配置 Key 的提供商被选中时显示「未配置」提示。
 >
 > **希望支持**：已调研确认具备可行性的候选提供商，尚未实现。智谱 GLM 仅有社区逆向的非官方端点（无稳定性保障）。
 

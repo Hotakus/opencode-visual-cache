@@ -109,7 +109,7 @@ The plugin supports slash commands and command palette (`Ctrl + P`) for runtime 
 | `/cache-section` | Toggle sections & border | Independently show/hide Detail, Model & Pricing, Token Distribution, Loaded Skills, Balance, or the panel border |
 | `/cache-config` | View current config | Displays currency, rate, and section visibility |
 | `/cache-lang` | Switch display language | Pick Chinese or English from the dialog — takes effect immediately, no restart needed |
-| `/cache-balance` | Balance query settings | Pick a balance provider / toggle auto-switch; selecting a provider without a key jumps straight into key setup |
+| `/cache-balance` | Balance query settings | Pick a balance provider (menu shows key source: user key / OpenCode / not set) / toggle auto-switch |
 | `/cache-balance-key` | Set balance API key | Two-step flow: pick a provider → enter the API key |
 
 <div align="center">
@@ -150,7 +150,7 @@ Toggled via `/cache-section` — takes effect instantly, no restart required. Th
 
 ### 4.4 Balance Query
 
-The panel can display account balance from multiple AI providers. Use `/cache-balance` to pick a provider and set its API key; with **auto-switch** enabled, the balance query follows the model provider of the current session automatically.
+The panel can display account balance from multiple AI providers. With **auto-switch** enabled, the balance query follows the model provider of the current session automatically.
 
 Supported balance providers:
 
@@ -163,9 +163,11 @@ Supported balance providers:
 | Zhipu GLM | Pending (community-reversed endpoint, unofficial) | CNY | — | ⏳ Planned |
 | xAI | Pending (requires Management Key + Team ID) | USD | — | ⏳ Planned |
 
-> **Key storage**: API keys are stored in plaintext in the plugin's persistent KV — avoid using on shared devices.
+> **Key source**: a key set manually via `/cache-balance-key` takes priority; otherwise the plugin reuses the credential OpenCode already authenticated (`/connect`-configured providers). Providers with neither cannot show a balance.
 >
-> **Auto-switch**: enabled by default; picking a provider manually disables it — re-enable anytime via `/cache-balance`. Providers without a key are skipped by auto-switch.
+> **Key storage**: manually configured API keys are stored in plaintext in the plugin's persistent KV — avoid using on shared devices.
+>
+> **Auto-switch**: enabled by default; picking a provider manually disables it — re-enable anytime via `/cache-balance`. Auto-switch matches the current session's model provider; a provider without a key shows a "not set" hint when selected.
 >
 > **Planned**: candidates confirmed feasible by research, not yet implemented. Zhipu GLM only has a community-reversed unofficial endpoint (no stability guarantee).
 
