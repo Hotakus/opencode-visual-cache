@@ -101,8 +101,32 @@ const openrouterProvider: BalanceProvider = {
   },
 }
 
+const moonshotProvider: BalanceProvider = {
+  id: "moonshot",
+  name: "Moonshot",
+  keyPlaceholder: "sk-...",
+  async fetchBalance(apiKey, signal) {
+    // 国内站 api.moonshot.cn（CNY）；国际站 api.moonshot.ai（USD）
+    const res = await fetch("https://api.moonshot.cn/v1/users/me/balance", {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      signal,
+    })
+    if (!res.ok) {
+      if (res.status === 401) throw new BalanceError("401")
+      if (res.status === 403) throw new BalanceError("403")
+      throw new BalanceError(String(res.status))
+    }
+    const json = await res.json() as {
+      data?: { available_balance?: string | number }
+    }
+    const balance = json.data?.available_balance
+    if (typeof balance === "undefined" || balance === null) throw new BalanceError("EMPTY")
+    return [{ currency: "CNY", total: String(balance) }]
+  },
+}
+
 /** 已注册的 provider 列表（按需追加新适配器）。 */
-export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider]
+export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider, moonshotProvider]
 
 /** 按 id 取 provider；未知 id 回退到第一个。 */
 export function getBalanceProvider(id: string): BalanceProvider {
