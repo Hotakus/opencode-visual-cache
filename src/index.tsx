@@ -552,9 +552,23 @@ function TokenCachePanel(props: {
   })
 
   // 自动跟随当前会话的 provider（精确匹配）。手动切换会关闭此行为。
+  // 自动跟随当前会话的 provider（前缀匹配）。手动切换会关闭此行为。
+  // 直接追踪 messages 取最后一条 assistant 消息的 providerID——
+  // 不依赖 session.model 的响应式更新（模型切换时该链路可能不触发重算）。
   createEffect(() => {
     if (!autoBalance()) return
-    const hit = matchBalanceProvider(data().providerName)
+    const sid = props.signals.overrideSessionId() ?? props.sessionId
+    const msgs = props.api.state.session.messages(sid) as Message[]
+    let pid = ""
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role === "assistant" && (m as AssistantMessage).providerID) {
+        pid = (m as AssistantMessage).providerID
+        break
+      }
+    }
+    if (!pid) return
+    const hit = matchBalanceProvider(pid)
     if (hit && hit.id !== balanceProviderId()) {
       setBalanceProviderId(hit.id)
       props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
