@@ -1299,6 +1299,19 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   // ── slash commands for runtime config ──
   const KV_PREFIX = "cache_panel"
 
+  /** 菜单中 provider 选项标题：标注 key 来源（手动配置 / OpenCode 自动复用 / 未配置）。 */
+  const providerOptionTitle = (p: BalanceProvider, current?: string) => {
+    const zh = langZH()
+    const hasManual = !!api.kv.get<string>(`${KV_PREFIX}.balance.${p.id}.key`, "")
+    const hasAuto = !hasManual && !!findOpencodeKey(api, p)
+    const mark = hasManual
+      ? (zh ? "（用户 key）" : " (user key)")
+      : hasAuto
+        ? (zh ? "（OpenCode）" : " (OpenCode)")
+        : (zh ? "（未配置）" : " (not set)")
+    return p.name + mark + (current && p.id === current ? " *" : "")
+  }
+
   /** 弹出指定 provider 的 API Key 输入框（脱敏预填；空清除 / 含 * 保留原 key / 新 key 实时刷新）。 */
   const promptBalanceKey = (dialog: TuiDialogStack | undefined, provider: BalanceProvider) => {
     const zh = langZH()
@@ -1503,7 +1516,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 value: "__auto__",
               },
               ...balanceProviders.map((p) => ({
-                title: p.name + (p.id === current ? " *" : ""),
+                title: providerOptionTitle(p, current),
                 value: p.id,
               })),
             ]}
@@ -1549,7 +1562,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
           <api.ui.DialogSelect
             title={zh ? "选择余额提供商" : "Select Balance Provider"}
             options={balanceProviders.map((p) => ({
-              title: p.name,
+              title: providerOptionTitle(p),
               value: p.id,
             }))}
             onSelect={(opt) => {
