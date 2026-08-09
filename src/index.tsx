@@ -8,6 +8,7 @@ import type {
   TuiSlotPlugin,
   TuiPluginModule,
   TuiThemeCurrent,
+  TuiDialogStack,
 } from "@opencode-ai/plugin/tui"
 import type { UserMessage, AssistantMessage, Message } from "@opencode-ai/sdk"
 import type {
@@ -19,6 +20,7 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, untrack } from "solid-js"
 import { PLUGIN_VERSION } from "./_version"
+import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry, type BalanceProvider } from "./balance-providers"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,7 +116,7 @@ const ZH_T = {
   secModel:   "模型",
   secSkills:  "已加载技能",
   balTotal:   "总余额:",
-  balNoKey:   "未配置 API Key",
+  balNoKey:   "未配置 {p} API Key",
   balLoading: "查询中...",
   balError:   "查询失败",
   balErr401:  "API Key 无效",
@@ -154,7 +156,7 @@ const EN_T = {
   secModel:   "Model",
   secSkills:  "Loaded Skills",
   balTotal:   "Total:",
-  balNoKey:   "No API Key set",
+  balNoKey:   "{p} API Key not set",
   balLoading: "Fetching...",
   balError:   "Fetch failed",
   balErr401:  "Invalid API Key",
@@ -348,45 +350,18 @@ interface TokenDist {
 }
 
 // ---------------------------------------------------------------------------
-// DeepSeek Balance
+// Balance state
 // ---------------------------------------------------------------------------
-
-interface DeepSeekBalance {
-  currency: string
-  total: string
-}
 
 interface BalanceState {
   status: "idle" | "loading" | "ok" | "error"
-  data: DeepSeekBalance[] | null
+  data: BalanceEntry[] | null
   lastFetch: number
   error?: string
   key?: string           // 上次成功/尝试查询所用的 key，用于检测 key 是否更换
 }
 
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
-
-async function fetchDeepSeekBalance(apiKey: string, signal?: AbortSignal): Promise<DeepSeekBalance[]> {
-  const res = await fetch("https://api.deepseek.com/user/balance", {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-    signal,
-  })
-  if (!res.ok) {
-    if (res.status === 401) throw new Error("401")
-    if (res.status === 402 || res.status === 403) throw new Error("403")
-    throw new Error(String(res.status))
-  }
-  const json = await res.json() as {
-    is_available?: boolean
-    balance_infos?: { currency: string; total_balance: string; granted_balance: string; topped_up_balance: string }[]
-  }
-  const infos = json.balance_infos ?? []
-  if (infos.length === 0) throw new Error("EMPTY")
-  return infos.map((info) => ({
-    currency: info.currency ?? "CNY",
-    total: info.total_balance ?? "0",
-  }))
-}
 
 /**
  * 将余额从来源币种换算为目标币种。
@@ -397,6 +372,27 @@ function convertBalance(target: string, targetRate: number, amount: number, from
   const fromRate = DEFAULT_RATES[from] ?? 1
   const usd = from === "USD" ? amount : amount / fromRate
   return target === "USD" ? usd : usd * targetRate
+}
+
+/**
+ * 从 OpenCode 已认证的 provider 读取 API key 作为余额查询的自动兜底。
+ * 匹配复用前缀逻辑：先精确匹配 id，再前缀匹配（如 moonshotai-cn → moonshot）。
+ * key 来源：auth.json（provider.key）或配置（provider.options.apiKey）。
+ * 仅当手动配置的 key 缺失时使用；读取失败或未匹配返回空串。
+ */
+function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
+  try {
+    const provs = api.state.provider as unknown as Array<{ id: string; key?: string; options?: { apiKey?: string } }>
+    // 大小写不敏感：精确匹配 id，否则前缀匹配（如 moonshotai-cn → moonshot）
+    const id = provider.id.toLowerCase()
+    const hit = provs.find((p) => p.id.toLowerCase() === id) ?? provs.find((p) => p.id.toLowerCase().startsWith(id))
+    if (!hit) return ""
+    const k = typeof hit.key === "string" ? hit.key : ""
+    if (k) return k
+    return typeof hit.options?.apiKey === "string" ? hit.options.apiKey : ""
+  } catch {
+    return ""
+  }
 }
 
 /** 货币符号：优先取 /cache-currency 内置映射，未知币种回退为代码。 */
@@ -429,9 +425,15 @@ interface PanelSignals {
   setSectionSkills: (v: boolean) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
-  /** Increment to force a DeepSeek balance re-fetch. */
+  /** Increment to force a balance re-fetch. */
   balanceRefresh: () => number
   setBalanceRefresh: (v: number) => void
+  /** Currently selected balance provider id (e.g. "deepseek"). */
+  balanceProviderId: () => string
+  setBalanceProviderId: (v: string) => void
+  /** Auto-switch to the session's provider for balance display. Manual switch disables it. */
+  autoBalance: () => boolean
+  setAutoBalance: (v: boolean) => void
   /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
   balanceCurrency: () => string
   setBalanceCurrency: (v: string) => void
@@ -488,6 +490,8 @@ function TokenCachePanel(props: {
     sectionSkills, setSectionSkills,
     sectionBalance, setSectionBalance,
     balanceRefresh,
+    balanceProviderId, setBalanceProviderId,
+    autoBalance, setAutoBalance,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
   } = props.signals
@@ -529,8 +533,14 @@ function TokenCachePanel(props: {
   // 请求序号：防止定时轮询与手动刷新并发时，慢的旧请求覆盖新结果
   let balanceSeq = 0
 
+  // 当前 provider 显示名
+  const providerName = createMemo(() => getBalanceProvider(balanceProviderId()).name)
+
   const pollBalance = async () => {
-    const key = props.api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
+    const provider = getBalanceProvider(balanceProviderId())
+    // 手动配置的 key 优先；缺失时自动复用 OpenCode 已认证的 key（auth.json / config）
+    const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+      || findOpencodeKey(props.api, provider)
     if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
     const now = Date.now()
     const prev = balanceState()
@@ -542,7 +552,7 @@ function TokenCachePanel(props: {
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
     try {
-      const data = await fetchDeepSeekBalance(key, controller.signal)
+      const data = await provider.fetchBalance(key, controller.signal)
       clearTimeout(timer)
       if (seq !== balanceSeq) return // 已被更新的请求取代，丢弃过期结果
       setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
@@ -562,6 +572,37 @@ function TokenCachePanel(props: {
   createEffect(() => {
     void balanceRefresh()
     untrack(() => { void pollBalance() })
+  })
+
+  // 自动切换当前会话的 provider（前缀匹配）。手动切换会关闭此行为。
+  // 直接追踪 messages 取最后一条 assistant 消息的 providerID——
+  // 不依赖 session.model 的响应式更新（模型切换时该链路可能不触发重算）。
+  createEffect(() => {
+    if (!autoBalance()) return
+    const sid = props.signals.overrideSessionId() ?? props.sessionId
+    const msgs = props.api.state.session.messages(sid) as Message[]
+    let pid = ""
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role === "assistant" && (m as AssistantMessage).providerID) {
+        pid = (m as AssistantMessage).providerID
+        break
+      }
+    }
+    // 会话尚无 assistant 消息（新会话 / 刚切换模型未对话 / 消息未加载）
+    // → 回退到会话级模型元数据，反映当前正在使用的 provider
+    if (!pid) {
+      try {
+        const session = props.api.state.session.get(sid)
+        pid = session?.model?.providerID ?? ""
+      } catch { /* ignore */ }
+    }
+    if (!pid) return
+    const hit = matchBalanceProvider(pid)
+    if (hit && hit.id !== balanceProviderId()) {
+      setBalanceProviderId(hit.id)
+      props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+    }
   })
 
   // ── auto-clear override when the user navigates to a different main session ──
@@ -763,6 +804,23 @@ function TokenCachePanel(props: {
         if (typeof rate === "number" && rate > 0) setExchangeRate(rate)
         const balCur = props.api.kv.get<string>(`${KV_PREFIX}.balance_currency`)
         if (typeof balCur === "string") setBalanceCurrency(balCur)
+        // Restore balance provider (fall back to default when unknown)
+        const savedProvider = props.api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
+        if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
+          setBalanceProviderId(savedProvider)
+        }
+        // Restore auto-switch (default on)
+        const savedAuto = props.api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
+        if (typeof savedAuto === "boolean") setAutoBalance(savedAuto)
+        // Migrate legacy DeepSeek key (cache_panel.ds_key → cache_panel.balance.deepseek.key)
+        const legacyKey = props.api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
+        if (legacyKey) {
+          const dsKey = props.api.kv.get<string>(`${KV_PREFIX}.balance.deepseek.key`, "")
+          if (!dsKey) props.api.kv.set(`${KV_PREFIX}.balance.deepseek.key`, legacyKey)
+          props.api.kv.set(`${KV_PREFIX}.ds_key`, "")
+        }
+        // 恢复的 provider 可能与默认值不同，强制重新查询
+        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
         setSectionDetail(Boolean(props.api.kv.get(`${KV_PREFIX}.section.detail`, true)))
         setSectionModel(Boolean(props.api.kv.get(`${KV_PREFIX}.section.model`, true)))
         setSectionDist(Boolean(props.api.kv.get(`${KV_PREFIX}.section.dist`, true)))
@@ -1115,7 +1173,7 @@ function TokenCachePanel(props: {
             <Show when={balanceState().status === "idle"}>
               <text fg={pal().muted}>
                 <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{t().balNoKey}</span>
+                <span>{t().balNoKey.replace("{p}", providerName())}</span>
               </text>
             </Show>
             <Show when={balanceState().status === "loading"}>
@@ -1214,6 +1272,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionSkills, setSectionSkills] = createSignal(true)
   const [sectionBalance, setSectionBalance] = createSignal(true)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
+  const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
+  const [autoBalance, setAutoBalance] = createSignal(true)
   const [balanceCurrency, setBalanceCurrency] = createSignal("")
   const [borderVisible, setBorderVisible] = createSignal(true)
   const [langZH, setLangZH] = createSignal(LANG_ZH)
@@ -1229,6 +1289,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     sectionSkills, setSectionSkills,
     sectionBalance, setSectionBalance,
     balanceRefresh, setBalanceRefresh,
+    balanceProviderId, setBalanceProviderId,
+    autoBalance, setAutoBalance,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
     overrideSessionId, setOverrideSessionId,
@@ -1238,6 +1300,55 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   // ── slash commands for runtime config ──
   const KV_PREFIX = "cache_panel"
+
+  /** 菜单中 provider 选项标题：标注 key 来源（手动配置 / OpenCode 自动复用 / 未配置）。 */
+  const providerOptionTitle = (p: BalanceProvider, current?: string) => {
+    const zh = langZH()
+    const hasManual = !!api.kv.get<string>(`${KV_PREFIX}.balance.${p.id}.key`, "")
+    const hasAuto = !hasManual && !!findOpencodeKey(api, p)
+    const mark = hasManual
+      ? (zh ? "（用户 key）" : " (user key)")
+      : hasAuto
+        ? (zh ? "（OpenCode）" : " (OpenCode)")
+        : (zh ? "（未配置）" : " (not set)")
+    return p.name + mark + (current && p.id === current ? " *" : "")
+  }
+
+  /** 弹出指定 provider 的 API Key 输入框（脱敏预填；空清除 / 含 * 保留原 key / 新 key 实时刷新）。 */
+  const promptBalanceKey = (dialog: TuiDialogStack | undefined, provider: BalanceProvider) => {
+    const zh = langZH()
+    const current = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+    const masked = maskKey(current)
+    dialog?.replace(() => (
+      <api.ui.DialogPrompt
+        title={provider.name}
+        description={() => <text>{zh ? `输入 ${provider.name} API Key 以显示账户余额（留空清除）` : `Enter your ${provider.name} API key to show account balance (leave empty to clear)`}</text>}
+        placeholder={provider.keyPlaceholder ?? "sk-..."}
+        value={masked}
+        onConfirm={(val) => {
+          const input = val.trim()
+          let key: string
+          if (input === "") {
+            key = ""
+          } else if (input.includes("*")) {
+            key = current
+          } else {
+            key = input
+          }
+          api.kv.set(`${KV_PREFIX}.balance.${provider.id}.key`, key)
+          setBalanceRefresh(v => v + 1)
+          if (key) {
+            api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
+          } else {
+            api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
+          }
+          dialog?.clear()
+        }}
+        onCancel={() => dialog?.clear()}
+      />
+    ))
+  }
+
   api.command?.register(() => [
     {
       title: "Cache: Set Currency",
@@ -1314,7 +1425,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               { title: `Model & Pricing [${modelOn  ? "ON" : "OFF"}]`,  value: "model" },
               { title: `Token Dist.     [${distOn   ? "ON" : "OFF"}]`,  value: "dist" },
               { title: `Loaded Skills   [${skillsOn ? "ON" : "OFF"}]`,  value: "skills" },
-              { title: `DS Balance      [${balanceOn ? "ON" : "OFF"}]`, value: "balance" },
+              { title: `Balance         [${balanceOn ? "ON" : "OFF"}]`, value: "balance" },
               { title: `Panel Border    [${borderOn ? "ON" : "OFF"}]`,  value: "border" },
             ]}
             onSelect={(opt) => {
@@ -1387,49 +1498,87 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       },
     },
     {
-      title: "Cache: Set DeepSeek API Key",
+      title: "Cache: Switch Balance Provider",
+      value: "cache.balance",
+      description: "切换余额提供商 / 自动切换当前会话提供商 | Switch balance provider / auto-switch session provider",
+      slash: { name: "cache-balance" },
+      onSelect: (dialog) => {
+        const zh = langZH()
+        const current = signals.balanceProviderId()
+        const auto = signals.autoBalance()
+        const autoLabel = auto
+          ? (zh ? "自动切换提供商 [开]" : "Auto-switch provider [ON]")
+          : (zh ? "自动切换提供商 [关]" : "Auto-switch provider [OFF]")
+        dialog?.replace(() => (
+          <api.ui.DialogSelect
+            title={zh ? "余额提供商 / 自动切换" : "Balance Provider / Auto-switch"}
+            options={[
+              {
+                title: autoLabel,
+                value: "__auto__",
+              },
+              ...balanceProviders.map((p) => ({
+                title: providerOptionTitle(p, current),
+                value: p.id,
+              })),
+            ]}
+            onSelect={(opt) => {
+              if (opt.value === "__auto__") {
+                const next = !auto
+                api.kv.set(`${KV_PREFIX}.balance.auto`, next)
+                signals.setAutoBalance(next)
+                api.ui.toast({ message: zh ? `自动切换余额提供商: ${next ? "开" : "关"}` : `Auto-switch balance provider: ${next ? "ON" : "OFF"}` })
+                dialog?.clear()
+              } else {
+                const provider = getBalanceProvider(opt.value)
+                // 手动切换会关闭自动切换
+                api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
+                api.kv.set(`${KV_PREFIX}.balance.auto`, false)
+                signals.setBalanceProviderId(provider.id)
+                signals.setAutoBalance(false)
+                // 切换后立即按新 provider 刷新显示（无 key 时显示 idle，避免残留上一 provider 余额）
+                signals.setBalanceRefresh(signals.balanceRefresh() + 1)
+                const hasKey = !!api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+                if (!hasKey) {
+                  // 未配置 key → 进入设置流程（对话框保持打开等待输入）
+                  promptBalanceKey(dialog, provider)
+                } else {
+                  api.ui.toast({ message: zh ? `余额提供商: ${provider.name}（自动切换已关闭）` : `Balance provider: ${provider.name} (auto-switch off)` })
+                  dialog?.clear()
+                }
+              }
+            }}
+          />
+        ))
+      },
+    },
+    {
+      title: "Cache: Set Balance API Key",
       value: "cache.balance.key",
-      description: "Set or update the DeepSeek API key for balance display",
+      description: "Select a provider and set its API key for balance display",
       slash: { name: "cache-balance-key" },
       onSelect: (dialog) => {
         const zh = langZH()
-        const current = api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
-        // 已保存的 key 以脱敏形式预填：保留 "sk-" 前缀 + 头 5 尾 5 字符，中间用 * 填充
-        const maskKey = (k: string): string => {
-          if (!k) return ""
-          const prefix = k.startsWith("sk-") ? "sk-" : ""
-          const body = prefix ? k.slice(3) : k
-          if (body.length <= 10) return prefix + body.slice(0, 5) + "*".repeat(Math.max(3, body.length - 5))
-          return prefix + body.slice(0, 5) + "*".repeat(Math.max(3, body.length - 10)) + body.slice(-5)
-        }
-        const masked = maskKey(current)
+        // 步骤 1：选择 provider
         dialog?.replace(() => (
-          <api.ui.DialogPrompt
-            title={zh ? "DeepSeek API Key" : "DeepSeek API Key"}
-            description={() => <text>{zh ? "输入 DeepSeek API Key 以显示账户余额（留空清除）" : "Enter your DeepSeek API key to show account balance (leave empty to clear)"}</text>}
-            placeholder="sk-..."
-            value={masked}
-            onConfirm={(val) => {
-              const input = val.trim()
-              // 空 → 清除；含 * （脱敏占位符残留）→ 视为未修改，保留原 key；否则为新 key
-              let key: string
-              if (input === "") {
-                key = ""
-              } else if (input.includes("*")) {
-                key = current
-              } else {
-                key = input
-              }
-              api.kv.set(`${KV_PREFIX}.ds_key`, key)
-              setBalanceRefresh(v => v + 1)
-              if (key) {
-                api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
-              } else {
-                api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
-              }
-              dialog?.clear()
+          <api.ui.DialogSelect
+            title={zh ? "选择余额提供商" : "Select Balance Provider"}
+            options={balanceProviders.map((p) => ({
+              title: providerOptionTitle(p),
+              value: p.id,
+            }))}
+            onSelect={(opt) => {
+              const provider = getBalanceProvider(opt.value)
+              // 手动指定 provider 会关闭自动切换
+              api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
+              api.kv.set(`${KV_PREFIX}.balance.auto`, false)
+              signals.setBalanceProviderId(provider.id)
+              signals.setAutoBalance(false)
+              // 切换后立即刷新显示（防止取消输入时残留上一 provider 的余额）
+              signals.setBalanceRefresh(signals.balanceRefresh() + 1)
+              // 步骤 2：输入 key
+              promptBalanceKey(dialog, provider)
             }}
-            onCancel={() => dialog?.clear()}
           />
         ))
       },

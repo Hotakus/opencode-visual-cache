@@ -50,6 +50,7 @@
 - **折叠记忆**：折叠状态持久化，重启后保持
 - **语言适配**：自动检测系统语言，支持 `/cache-lang` 运行时切换中/英文，偏好持久化
 - **多币种**：通过 `/cache-currency` 切换货币，费用和节省同步换算
+- **余额查询**：查询多家 AI 提供商的账户余额，支持自动切换跟随当前会话提供商
 - **斜杠命令**：`/cache-session` `/cache-session-back` `/cache-rate` `/cache-section` `/cache-config` `/cache-lang` 动态配置面板
 - **子代理缓存查看**：`/cache-session` 自动扫描并列出子代理，选择一个即可切换面板显示其缓存统计，支持 `/cache-session-back` 返回主会话
 - **已加载技能**：检测 session 中 LLM 调用 `skill` tool 的记录，展示已加载技能名及估算 Token 占用
@@ -105,9 +106,11 @@ npm install -g opencode-visual-cache@latest
 | `/cache-session-back` | 返回主会话统计 | 从子代理缓存视图切回主会话 |
 | `/cache-currency` | 切换货币单位 | 从列表选择货币（USD / CNY / EUR / JPY / GBP / KRW），自动填入默认汇率 |
 | `/cache-rate` | 调整汇率乘数 | 输入自定义汇率（如 `7.2`），用于费用换算 |
-| `/cache-section` | 开关区块与边框 | 独立控制 Token 明细 / 模型与定价 / 估算 Token 分布 / 已加载技能 / 面板边框的显隐 |
+| `/cache-section` | 开关区块与边框 | 独立控制 Token 明细 / 模型与定价 / 估算 Token 分布 / 已加载技能 / 余额 / 面板边框的显隐 |
 | `/cache-config` | 查看当前配置 | 弹出当前货币、汇率、区块可见性状态 |
 | `/cache-lang` | 切换显示语言 | 从列表选择中文或 English，界面即时切换，无需重启 |
+| `/cache-balance` | 余额查询设置 | 选择余额提供商（菜单标注 Key 来源：用户 key / OpenCode / 未配置）/ 开关自动切换 |
+| `/cache-balance-key` | 设置余额 API Key | 两步流程：选择提供商 → 输入 API Key |
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/Hotakus/opencode-visual-cache/master/assets/splash_cmd.png" alt="斜杠命令" width="49%"></img>
@@ -141,10 +144,34 @@ npm install -g opencode-visual-cache@latest
 - **模型与定价**：费用 / 提供商 / 模型名 / 单价
 - **估算 Token 分布**：按角色拆分的 Token 估算
 - **已加载技能**：session 中 LLM 实际调用过的 Skill 名及估算 Token 占用
+- **余额**：当前提供商账户余额（多提供商 + 自动切换）
 
 通过 `/cache-section` 切换后即时生效，无需重启。此外，该命令还可以开关面板的**外边框**——关闭后内容会顶格显示，释放额外空间。
 
 > **关于 Token 分布数值**：分布面板中"总计"为最后一次 API 调用的精确 token 数，"系统提示"/"用户"等分项为字符级 BPE 估算值。分项之和通常小于总计，差值主要来自 OpenCode 运行时注入的系统提示组成部分，包括环境信息、Skill 目录、工具 Schema 定义等（详见 [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts)、[`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)）。这些内容不在 agent 配置的 `prompt` 字段中，因此插件无法估算，属于预期行为。
+
+### 4.4 余额查询
+
+面板支持显示多家 AI 提供商的账户余额。开启**自动切换**后，余额查询会跟随当前会话正在使用的模型提供商自动切换。
+
+已支持余额查询的提供商：
+
+| 提供商 | 余额查询端点 | 币种 | Key 前缀 | 状态 |
+|--------|-------------|------|---------|------|
+| DeepSeek | `https://api.deepseek.com/user/balance` | CNY / USD | `sk-` | ✅ 已支持 |
+| SiliconFlow | `https://api.siliconflow.cn/v1/user/info` | CNY | `sk-` | ✅ 已支持 |
+| OpenRouter | `https://openrouter.ai/api/v1/credits` | USD | `sk-or-` | ✅ 已支持 |
+| Moonshot | `https://api.moonshot.cn/v1/users/me/balance` | CNY | `sk-` | ✅ 已支持 |
+| 智谱 GLM | 待接入（社区逆向端点，非官方） | CNY | — | ⏳ 希望支持 |
+| xAI | 待接入（需 Management Key + Team ID） | USD | — | ⏳ 希望支持 |
+
+> **Key 来源**：优先使用 `/cache-balance-key` 手动配置的 Key；未手动配置时自动复用 OpenCode 已认证的凭据（`/connect` 配置的 provider）。两者都没有的提供商无法查询余额。
+>
+> **Key 存储**：手动配置的 API Key 明文保存于插件持久化 KV，请勿在共享设备上使用。
+>
+> **自动切换**：默认开启；手动选择提供商后自动关闭，可在 `/cache-balance` 中重新开启。自动切换按当前会话的模型提供商匹配，未配置 Key 的提供商被选中时显示「未配置」提示。
+>
+> **希望支持**：已调研确认具备可行性的候选提供商，尚未实现。智谱 GLM 仅有社区逆向的非官方端点（无稳定性保障）。
 
 ---
 
