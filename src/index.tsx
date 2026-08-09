@@ -410,7 +410,7 @@ interface PanelSignals {
   /** Currently selected balance provider id (e.g. "deepseek"). */
   balanceProviderId: () => string
   setBalanceProviderId: (v: string) => void
-  /** Auto-follow the session's provider for balance display. Manual switch disables it. */
+  /** Auto-switch to the session's provider for balance display. Manual switch disables it. */
   autoBalance: () => boolean
   setAutoBalance: (v: boolean) => void
   /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
@@ -551,8 +551,7 @@ function TokenCachePanel(props: {
     untrack(() => { void pollBalance() })
   })
 
-  // 自动跟随当前会话的 provider（精确匹配）。手动切换会关闭此行为。
-  // 自动跟随当前会话的 provider（前缀匹配）。手动切换会关闭此行为。
+  // 自动切换当前会话的 provider（前缀匹配）。手动切换会关闭此行为。
   // 直接追踪 messages 取最后一条 assistant 消息的 providerID——
   // 不依赖 session.model 的响应式更新（模型切换时该链路可能不触发重算）。
   createEffect(() => {
@@ -779,7 +778,7 @@ function TokenCachePanel(props: {
         if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
           setBalanceProviderId(savedProvider)
         }
-        // Restore auto-follow (default on)
+        // Restore auto-switch (default on)
         const savedAuto = props.api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
         if (typeof savedAuto === "boolean") setAutoBalance(savedAuto)
         // Migrate legacy DeepSeek key (cache_panel.ds_key → cache_panel.balance.deepseek.key)
@@ -1457,20 +1456,23 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     {
       title: "Cache: Switch Balance Provider",
       value: "cache.balance",
-      description: "Switch balance provider or toggle auto-follow",
+      description: "切换余额提供商 / 自动切换当前会话提供商 | Switch balance provider / auto-switch session provider",
       slash: { name: "cache-balance" },
       onSelect: (dialog) => {
         const zh = langZH()
         const current = signals.balanceProviderId()
         const auto = signals.autoBalance()
         const autoLabel = auto
-          ? (zh ? "自动跟随 [开]" : "Auto-follow [ON]")
-          : (zh ? "自动跟随 [关]" : "Auto-follow [OFF]")
+          ? (zh ? "自动切换提供商 [开]" : "Auto-switch provider [ON]")
+          : (zh ? "自动切换提供商 [关]" : "Auto-switch provider [OFF]")
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title={zh ? "余额提供商 / 自动跟随" : "Balance Provider / Auto-follow"}
+            title={zh ? "余额提供商 / 自动切换" : "Balance Provider / Auto-switch"}
             options={[
-              { title: autoLabel, value: "__auto__" },
+              {
+                title: autoLabel,
+                value: "__auto__",
+              },
               ...balanceProviders.map((p) => ({
                 title: p.name + (p.id === current ? " *" : ""),
                 value: p.id,
@@ -1481,11 +1483,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 const next = !auto
                 api.kv.set(`${KV_PREFIX}.balance.auto`, next)
                 signals.setAutoBalance(next)
-                api.ui.toast({ message: zh ? `自动跟随余额提供商: ${next ? "开" : "关"}` : `Auto-follow balance provider: ${next ? "ON" : "OFF"}` })
+                api.ui.toast({ message: zh ? `自动切换余额提供商: ${next ? "开" : "关"}` : `Auto-switch balance provider: ${next ? "ON" : "OFF"}` })
                 dialog?.clear()
               } else {
                 const provider = getBalanceProvider(opt.value)
-                // 手动切换会关闭自动跟随
+                // 手动切换会关闭自动切换
                 api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
                 api.kv.set(`${KV_PREFIX}.balance.auto`, false)
                 signals.setBalanceProviderId(provider.id)
@@ -1497,7 +1499,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                   // 未配置 key → 进入设置流程（对话框保持打开等待输入）
                   promptBalanceKey(dialog, provider)
                 } else {
-                  api.ui.toast({ message: zh ? `余额提供商: ${provider.name}（自动跟随已关闭）` : `Balance provider: ${provider.name} (auto-follow off)` })
+                  api.ui.toast({ message: zh ? `余额提供商: ${provider.name}（自动切换已关闭）` : `Balance provider: ${provider.name} (auto-switch off)` })
                   dialog?.clear()
                 }
               }
@@ -1523,7 +1525,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
             }))}
             onSelect={(opt) => {
               const provider = getBalanceProvider(opt.value)
-              // 手动指定 provider 会关闭自动跟随
+              // 手动指定 provider 会关闭自动切换
               api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
               api.kv.set(`${KV_PREFIX}.balance.auto`, false)
               signals.setBalanceProviderId(provider.id)
