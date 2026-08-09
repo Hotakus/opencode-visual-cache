@@ -8,6 +8,7 @@ import type {
   TuiSlotPlugin,
   TuiPluginModule,
   TuiThemeCurrent,
+  TuiDialogStack,
 } from "@opencode-ai/plugin/tui"
 import type { UserMessage, AssistantMessage, Message } from "@opencode-ai/sdk"
 import type {
@@ -19,7 +20,7 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, untrack } from "solid-js"
 import { PLUGIN_VERSION } from "./_version"
-import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry } from "./balance-providers"
+import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry, type BalanceProvider } from "./balance-providers"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1255,6 +1256,42 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   // ── slash commands for runtime config ──
   const KV_PREFIX = "cache_panel"
+
+  /** 弹出指定 provider 的 API Key 输入框（脱敏预填；空清除 / 含 * 保留原 key / 新 key 实时刷新）。 */
+  const promptBalanceKey = (dialog: TuiDialogStack | undefined, provider: BalanceProvider) => {
+    const zh = langZH()
+    const current = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+    const masked = maskKey(current)
+    dialog?.replace(() => (
+      <api.ui.DialogPrompt
+        title={provider.name}
+        description={() => <text>{zh ? `输入 ${provider.name} API Key 以显示账户余额（留空清除）` : `Enter your ${provider.name} API key to show account balance (leave empty to clear)`}</text>}
+        placeholder={provider.keyPlaceholder ?? "sk-..."}
+        value={masked}
+        onConfirm={(val) => {
+          const input = val.trim()
+          let key: string
+          if (input === "") {
+            key = ""
+          } else if (input.includes("*")) {
+            key = current
+          } else {
+            key = input
+          }
+          api.kv.set(`${KV_PREFIX}.balance.${provider.id}.key`, key)
+          setBalanceRefresh(v => v + 1)
+          if (key) {
+            api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
+          } else {
+            api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
+          }
+          dialog?.clear()
+        }}
+        onCancel={() => dialog?.clear()}
+      />
+    ))
+  }
+
   api.command?.register(() => [
     {
       title: "Cache: Set Currency",
@@ -1431,6 +1468,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 api.kv.set(`${KV_PREFIX}.balance.auto`, next)
                 signals.setAutoBalance(next)
                 api.ui.toast({ message: zh ? `自动跟随余额提供商: ${next ? "开" : "关"}` : `Auto-follow balance provider: ${next ? "ON" : "OFF"}` })
+                dialog?.clear()
               } else {
                 const provider = getBalanceProvider(opt.value)
                 // 手动切换会关闭自动跟随
@@ -1438,10 +1476,17 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 api.kv.set(`${KV_PREFIX}.balance.auto`, false)
                 signals.setBalanceProviderId(provider.id)
                 signals.setAutoBalance(false)
+                // 切换后立即按新 provider 刷新显示（无 key 时显示 idle，避免残留上一 provider 余额）
                 signals.setBalanceRefresh(signals.balanceRefresh() + 1)
-                api.ui.toast({ message: zh ? `余额提供商: ${provider.name}（自动跟随已关闭）` : `Balance provider: ${provider.name} (auto-follow off)` })
+                const hasKey = !!api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+                if (!hasKey) {
+                  // 未配置 key → 进入设置流程（对话框保持打开等待输入）
+                  promptBalanceKey(dialog, provider)
+                } else {
+                  api.ui.toast({ message: zh ? `余额提供商: ${provider.name}（自动跟随已关闭）` : `Balance provider: ${provider.name} (auto-follow off)` })
+                  dialog?.clear()
+                }
               }
-              dialog?.clear()
             }}
           />
         ))
@@ -1469,37 +1514,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               api.kv.set(`${KV_PREFIX}.balance.auto`, false)
               signals.setBalanceProviderId(provider.id)
               signals.setAutoBalance(false)
-              const current = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
-              const masked = maskKey(current)
-              // 步骤 2：输入 key（脱敏预填；空清除 / 含 * 保留原 key / 新 key 实时刷新）
-              dialog?.replace(() => (
-                <api.ui.DialogPrompt
-                  title={provider.name}
-                  description={() => <text>{zh ? `输入 ${provider.name} API Key 以显示账户余额（留空清除）` : `Enter your ${provider.name} API key to show account balance (leave empty to clear)`}</text>}
-                  placeholder={provider.keyPlaceholder ?? "sk-..."}
-                  value={masked}
-                  onConfirm={(val) => {
-                    const input = val.trim()
-                    let key: string
-                    if (input === "") {
-                      key = ""
-                    } else if (input.includes("*")) {
-                      key = current
-                    } else {
-                      key = input
-                    }
-                    api.kv.set(`${KV_PREFIX}.balance.${provider.id}.key`, key)
-                    setBalanceRefresh(v => v + 1)
-                    if (key) {
-                      api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
-                    } else {
-                      api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
-                    }
-                    dialog?.clear()
-                  }}
-                  onCancel={() => dialog?.clear()}
-                />
-              ))
+              // 切换后立即刷新显示（防止取消输入时残留上一 provider 的余额）
+              signals.setBalanceRefresh(signals.balanceRefresh() + 1)
+              // 步骤 2：输入 key
+              promptBalanceKey(dialog, provider)
             }}
           />
         ))
