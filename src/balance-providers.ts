@@ -136,11 +136,13 @@ export function getBalanceProvider(id: string): BalanceProvider {
 /**
  * 按 OpenCode providerID 匹配余额 provider。
  * 先精确匹配，再按前缀匹配（如 moonshotai-cn → moonshot）；未命中返回 undefined。
+ * 比较不区分大小写，容忍 providerID 的大小写变体。
  */
 export function matchBalanceProvider(providerId: string): BalanceProvider | undefined {
-  const exact = balanceProviders.find((p) => p.id === providerId)
+  const id = providerId.toLowerCase()
+  const exact = balanceProviders.find((p) => p.id.toLowerCase() === id)
   if (exact) return exact
-  return balanceProviders.find((p) => providerId.startsWith(p.id))
+  return balanceProviders.find((p) => id.startsWith(p.id.toLowerCase()))
 }
 
 /** key 脱敏：保留头 5 尾 5 字符，中间用 * 填充。 */

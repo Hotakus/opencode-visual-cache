@@ -383,7 +383,9 @@ function convertBalance(target: string, targetRate: number, amount: number, from
 function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
   try {
     const provs = api.state.provider as unknown as Array<{ id: string; key?: string; options?: { apiKey?: string } }>
-    const hit = provs.find((p) => p.id === provider.id) ?? provs.find((p) => p.id.startsWith(provider.id))
+    // 大小写不敏感：精确匹配 id，否则前缀匹配（如 moonshotai-cn → moonshot）
+    const id = provider.id.toLowerCase()
+    const hit = provs.find((p) => p.id.toLowerCase() === id) ?? provs.find((p) => p.id.toLowerCase().startsWith(id))
     if (!hit) return ""
     const k = typeof hit.key === "string" ? hit.key : ""
     if (k) return k
