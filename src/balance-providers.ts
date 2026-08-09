@@ -133,9 +133,14 @@ export function getBalanceProvider(id: string): BalanceProvider {
   return balanceProviders.find((p) => p.id === id) ?? balanceProviders[0] ?? deepseekProvider
 }
 
-/** 按 OpenCode providerID 精确匹配余额 provider；未命中返回 undefined。 */
+/**
+ * 按 OpenCode providerID 匹配余额 provider。
+ * 先精确匹配，再按前缀匹配（如 moonshotai-cn → moonshot）；未命中返回 undefined。
+ */
 export function matchBalanceProvider(providerId: string): BalanceProvider | undefined {
-  return balanceProviders.find((p) => p.id === providerId)
+  const exact = balanceProviders.find((p) => p.id === providerId)
+  if (exact) return exact
+  return balanceProviders.find((p) => providerId.startsWith(p.id))
 }
 
 /** key 脱敏：保留头 5 尾 5 字符，中间用 * 填充。 */
