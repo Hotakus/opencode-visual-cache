@@ -19,6 +19,7 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, untrack } from "solid-js"
 import { PLUGIN_VERSION } from "./_version"
+import { balanceProviders, getBalanceProvider, maskKey, type BalanceEntry } from "./balance-providers"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,7 +115,7 @@ const ZH_T = {
   secModel:   "模型",
   secSkills:  "已加载技能",
   balTotal:   "总余额:",
-  balNoKey:   "未配置 API Key",
+  balNoKey:   "未配置 {p} API Key",
   balLoading: "查询中...",
   balError:   "查询失败",
   balErr401:  "API Key 无效",
@@ -154,7 +155,7 @@ const EN_T = {
   secModel:   "Model",
   secSkills:  "Loaded Skills",
   balTotal:   "Total:",
-  balNoKey:   "No API Key set",
+  balNoKey:   "{p} API Key not set",
   balLoading: "Fetching...",
   balError:   "Fetch failed",
   balErr401:  "Invalid API Key",
@@ -348,45 +349,18 @@ interface TokenDist {
 }
 
 // ---------------------------------------------------------------------------
-// DeepSeek Balance
+// Balance state
 // ---------------------------------------------------------------------------
-
-interface DeepSeekBalance {
-  currency: string
-  total: string
-}
 
 interface BalanceState {
   status: "idle" | "loading" | "ok" | "error"
-  data: DeepSeekBalance[] | null
+  data: BalanceEntry[] | null
   lastFetch: number
   error?: string
   key?: string           // 上次成功/尝试查询所用的 key，用于检测 key 是否更换
 }
 
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
-
-async function fetchDeepSeekBalance(apiKey: string, signal?: AbortSignal): Promise<DeepSeekBalance[]> {
-  const res = await fetch("https://api.deepseek.com/user/balance", {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-    signal,
-  })
-  if (!res.ok) {
-    if (res.status === 401) throw new Error("401")
-    if (res.status === 402 || res.status === 403) throw new Error("403")
-    throw new Error(String(res.status))
-  }
-  const json = await res.json() as {
-    is_available?: boolean
-    balance_infos?: { currency: string; total_balance: string; granted_balance: string; topped_up_balance: string }[]
-  }
-  const infos = json.balance_infos ?? []
-  if (infos.length === 0) throw new Error("EMPTY")
-  return infos.map((info) => ({
-    currency: info.currency ?? "CNY",
-    total: info.total_balance ?? "0",
-  }))
-}
 
 /**
  * 将余额从来源币种换算为目标币种。
@@ -429,9 +403,12 @@ interface PanelSignals {
   setSectionSkills: (v: boolean) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
-  /** Increment to force a DeepSeek balance re-fetch. */
+  /** Increment to force a balance re-fetch. */
   balanceRefresh: () => number
   setBalanceRefresh: (v: number) => void
+  /** Currently selected balance provider id (e.g. "deepseek"). */
+  balanceProviderId: () => string
+  setBalanceProviderId: (v: string) => void
   /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
   balanceCurrency: () => string
   setBalanceCurrency: (v: string) => void
@@ -488,6 +465,7 @@ function TokenCachePanel(props: {
     sectionSkills, setSectionSkills,
     sectionBalance, setSectionBalance,
     balanceRefresh,
+    balanceProviderId, setBalanceProviderId,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
   } = props.signals
@@ -529,8 +507,12 @@ function TokenCachePanel(props: {
   // 请求序号：防止定时轮询与手动刷新并发时，慢的旧请求覆盖新结果
   let balanceSeq = 0
 
+  // 当前 provider 显示名
+  const providerName = createMemo(() => getBalanceProvider(balanceProviderId()).name)
+
   const pollBalance = async () => {
-    const key = props.api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
+    const provider = getBalanceProvider(balanceProviderId())
+    const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
     if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
     const now = Date.now()
     const prev = balanceState()
@@ -542,7 +524,7 @@ function TokenCachePanel(props: {
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
     try {
-      const data = await fetchDeepSeekBalance(key, controller.signal)
+      const data = await provider.fetchBalance(key, controller.signal)
       clearTimeout(timer)
       if (seq !== balanceSeq) return // 已被更新的请求取代，丢弃过期结果
       setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
@@ -763,6 +745,20 @@ function TokenCachePanel(props: {
         if (typeof rate === "number" && rate > 0) setExchangeRate(rate)
         const balCur = props.api.kv.get<string>(`${KV_PREFIX}.balance_currency`)
         if (typeof balCur === "string") setBalanceCurrency(balCur)
+        // Restore balance provider (fall back to default when unknown)
+        const savedProvider = props.api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
+        if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
+          setBalanceProviderId(savedProvider)
+        }
+        // Migrate legacy DeepSeek key (cache_panel.ds_key → cache_panel.balance.deepseek.key)
+        const legacyKey = props.api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
+        if (legacyKey) {
+          const dsKey = props.api.kv.get<string>(`${KV_PREFIX}.balance.deepseek.key`, "")
+          if (!dsKey) props.api.kv.set(`${KV_PREFIX}.balance.deepseek.key`, legacyKey)
+          props.api.kv.set(`${KV_PREFIX}.ds_key`, "")
+        }
+        // 恢复的 provider 可能与默认值不同，强制重新查询
+        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
         setSectionDetail(Boolean(props.api.kv.get(`${KV_PREFIX}.section.detail`, true)))
         setSectionModel(Boolean(props.api.kv.get(`${KV_PREFIX}.section.model`, true)))
         setSectionDist(Boolean(props.api.kv.get(`${KV_PREFIX}.section.dist`, true)))
@@ -1115,7 +1111,7 @@ function TokenCachePanel(props: {
             <Show when={balanceState().status === "idle"}>
               <text fg={pal().muted}>
                 <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{t().balNoKey}</span>
+                <span>{t().balNoKey.replace("{p}", providerName())}</span>
               </text>
             </Show>
             <Show when={balanceState().status === "loading"}>
@@ -1214,6 +1210,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionSkills, setSectionSkills] = createSignal(true)
   const [sectionBalance, setSectionBalance] = createSignal(true)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
+  const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [balanceCurrency, setBalanceCurrency] = createSignal("")
   const [borderVisible, setBorderVisible] = createSignal(true)
   const [langZH, setLangZH] = createSignal(LANG_ZH)
@@ -1229,6 +1226,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     sectionSkills, setSectionSkills,
     sectionBalance, setSectionBalance,
     balanceRefresh, setBalanceRefresh,
+    balanceProviderId, setBalanceProviderId,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
     overrideSessionId, setOverrideSessionId,
@@ -1387,49 +1385,83 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       },
     },
     {
-      title: "Cache: Set DeepSeek API Key",
+      title: "Cache: Switch Balance Provider",
+      value: "cache.balance.provider",
+      description: "Switch the balance provider for display",
+      slash: { name: "cache-balance-provider" },
+      onSelect: (dialog) => {
+        const zh = langZH()
+        const current = signals.balanceProviderId()
+        dialog?.replace(() => (
+          <api.ui.DialogSelect
+            title={zh ? "选择余额提供商" : "Select Balance Provider"}
+            options={balanceProviders.map((p) => ({
+              title: p.name + (p.id === current ? " *" : ""),
+              value: p.id,
+            }))}
+            onSelect={(opt) => {
+              const provider = getBalanceProvider(opt.value)
+              api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
+              signals.setBalanceProviderId(provider.id)
+              signals.setBalanceRefresh(signals.balanceRefresh() + 1)
+              api.ui.toast({ message: zh ? `余额提供商: ${provider.name}` : `Balance provider: ${provider.name}` })
+              dialog?.clear()
+            }}
+          />
+        ))
+      },
+    },
+    {
+      title: "Cache: Set Balance API Key",
       value: "cache.balance.key",
-      description: "Set or update the DeepSeek API key for balance display",
+      description: "Select a provider and set its API key for balance display",
       slash: { name: "cache-balance-key" },
       onSelect: (dialog) => {
         const zh = langZH()
-        const current = api.kv.get<string>(`${KV_PREFIX}.ds_key`, "")
-        // 已保存的 key 以脱敏形式预填：保留 "sk-" 前缀 + 头 5 尾 5 字符，中间用 * 填充
-        const maskKey = (k: string): string => {
-          if (!k) return ""
-          const prefix = k.startsWith("sk-") ? "sk-" : ""
-          const body = prefix ? k.slice(3) : k
-          if (body.length <= 10) return prefix + body.slice(0, 5) + "*".repeat(Math.max(3, body.length - 5))
-          return prefix + body.slice(0, 5) + "*".repeat(Math.max(3, body.length - 10)) + body.slice(-5)
-        }
-        const masked = maskKey(current)
+        // 步骤 1：选择 provider
         dialog?.replace(() => (
-          <api.ui.DialogPrompt
-            title={zh ? "DeepSeek API Key" : "DeepSeek API Key"}
-            description={() => <text>{zh ? "输入 DeepSeek API Key 以显示账户余额（留空清除）" : "Enter your DeepSeek API key to show account balance (leave empty to clear)"}</text>}
-            placeholder="sk-..."
-            value={masked}
-            onConfirm={(val) => {
-              const input = val.trim()
-              // 空 → 清除；含 * （脱敏占位符残留）→ 视为未修改，保留原 key；否则为新 key
-              let key: string
-              if (input === "") {
-                key = ""
-              } else if (input.includes("*")) {
-                key = current
-              } else {
-                key = input
-              }
-              api.kv.set(`${KV_PREFIX}.ds_key`, key)
-              setBalanceRefresh(v => v + 1)
-              if (key) {
-                api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
-              } else {
-                api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
-              }
-              dialog?.clear()
+          <api.ui.DialogSelect
+            title={zh ? "选择余额提供商" : "Select Balance Provider"}
+            options={balanceProviders.map((p) => ({
+              title: p.name,
+              value: p.id,
+            }))}
+            onSelect={(opt) => {
+              const provider = getBalanceProvider(opt.value)
+              api.kv.set(`${KV_PREFIX}.balance.provider`, provider.id)
+              signals.setBalanceProviderId(provider.id)
+              const current = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+              const masked = maskKey(current)
+              // 步骤 2：输入 key（脱敏预填；空清除 / 含 * 保留原 key / 新 key 实时刷新）
+              dialog?.replace(() => (
+                <api.ui.DialogPrompt
+                  title={provider.name}
+                  description={() => <text>{zh ? `输入 ${provider.name} API Key 以显示账户余额（留空清除）` : `Enter your ${provider.name} API key to show account balance (leave empty to clear)`}</text>}
+                  placeholder={provider.keyPlaceholder ?? "sk-..."}
+                  value={masked}
+                  onConfirm={(val) => {
+                    const input = val.trim()
+                    let key: string
+                    if (input === "") {
+                      key = ""
+                    } else if (input.includes("*")) {
+                      key = current
+                    } else {
+                      key = input
+                    }
+                    api.kv.set(`${KV_PREFIX}.balance.${provider.id}.key`, key)
+                    setBalanceRefresh(v => v + 1)
+                    if (key) {
+                      api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
+                    } else {
+                      api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
+                    }
+                    dialog?.clear()
+                  }}
+                  onCancel={() => dialog?.clear()}
+                />
+              ))
             }}
-            onCancel={() => dialog?.clear()}
           />
         ))
       },
