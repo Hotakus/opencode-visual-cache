@@ -48,7 +48,7 @@ Interested in sub-agent monitoring? Check out [opencode-subagent-magazine](https
 - **Adaptive Colors**: ≥85% green · ≥70% orange · <70% red, auto-desaturated from current theme
 - **Token Distribution**: Per-role (system / user / agent instr / tool call / tool result) estimated token breakdown
 - **Persistent State**: Fold preferences and config remembered across restarts via api.kv
-- **Language**: Auto-detects system locale, with `/cache-lang` for runtime switching between Chinese and English — preference persisted across restarts
+- **Language**: Chinese / English / 日本語 / 한국어, auto-detects system locale, with `/cache-lang` for runtime switching — user preference takes priority over auto-detection
 - **Multi-currency**: Switch via `/cache-currency` — costs, savings, and per-million rates convert in real time
 - **Balance Query**: Query account balance across multiple AI providers, with auto-switch following the current session's provider
 - **Slash Commands**: `/cache-session` `/cache-session-back` `/cache-rate` `/cache-section` `/cache-config` `/cache-lang` for live panel configuration
@@ -211,11 +211,11 @@ The plugin provides three ways to control the display language, listed by priori
 
 ### 6.1 Runtime Switching (recommended)
 
-Type `/cache-lang` in the TUI and select **Chinese** or **English** from the dialog. The panel switches immediately without restarting, and your preference is persisted automatically for the next session.
+Type `/cache-lang` in the TUI and select Chinese / English / 日本語 / 한국어 from the dialog. The panel switches immediately without restarting. Your preference is persisted and takes priority over auto-detection on the next launch.
 
 ### 6.2 Environment Variable Override
 
-Set the `CACHE_TUI_LANG` environment variable before launching to force a specific language:
+Set the `CACHE_TUI_LANG` environment variable before launching to force a specific language (`zh` / `en` / `ja` / `ko`):
 
 ```powershell
 # Windows PowerShell

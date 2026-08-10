@@ -48,7 +48,7 @@
 - **颜色自适应**：命中率 ≥85% 绿 · ≥70% 橙 · <70% 红，颜色从主题色自动去饱和
 - **Token 分布**：按角色（系统提示 / 用户 / Agent 指令 / Tool 调用 / Tool 结果）展示估算 Token 占比
 - **折叠记忆**：折叠状态持久化，重启后保持
-- **语言适配**：自动检测系统语言，支持 `/cache-lang` 运行时切换中/英文，偏好持久化
+- **语言适配**：支持 中文 / English / 日本語 / 한국어，自动检测系统语言，`/cache-lang` 运行时切换，偏好持久化优先
 - **多币种**：通过 `/cache-currency` 切换货币，费用和节省同步换算
 - **余额查询**：查询多家 AI 提供商的账户余额，支持自动切换跟随当前会话提供商
 - **斜杠命令**：`/cache-session` `/cache-session-back` `/cache-rate` `/cache-section` `/cache-config` `/cache-lang` 动态配置面板
@@ -213,11 +213,11 @@ rm -rf ~/.cache/opencode/packages/opencode-visual-cache@latest
 
 ### 6.1 运行时切换（推荐）
 
-在 TUI 中输入 `/cache-lang`，从弹窗选择「中文」或「English」即可即时切换，无需重启。偏好会自动持久化，下次启动自动恢复。
+在 TUI 中输入 `/cache-lang`，从弹窗选择 中文 / English / 日本語 / 한국어 即可即时切换，无需重启。偏好会自动持久化，下次启动优先恢复用户选择。
 
 ### 6.2 环境变量覆盖
 
-启动前设置 `CACHE_TUI_LANG` 环境变量可强制指定语言：
+启动前设置 `CACHE_TUI_LANG` 环境变量可强制指定语言（`zh` / `en` / `ja` / `ko`）：
 
 ```powershell
 # Windows PowerShell
