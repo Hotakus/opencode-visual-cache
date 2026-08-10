@@ -945,7 +945,9 @@ function TokenCachePanel(props: {
 
   const sep = createMemo(() => "\u2500".repeat(Math.max(1, panelWidth() - gutter())))
   function trendLabel(t: number): string {
-    return (t > 0 ? "\u2191" : t < 0 ? "\u2193" : "-") + (t !== 0 ? Math.abs(t).toFixed(1) + "%" : "")
+    // |t| < 0.05 视为无变化：避免显示 "↑0.0%" 的矛盾（箭头存在但数值截断为零）
+    if (Math.abs(t) < 0.05) return "-"
+    return (t > 0 ? "\u2191" : "\u2193") + Math.abs(t).toFixed(1) + "%"
   }
 
   const barW = createMemo(() => {
@@ -1007,7 +1009,7 @@ function TokenCachePanel(props: {
               {" ".repeat(Math.max(1, panelWidth() - gutter() - HEADER_PREFIX - visualWidth(t().title) - visualWidth(pct() + " " + t().hitFolded + " " + trendLabel(data().trend))))}
             </span>
             <span style={{ fg: hitColor() }}>{pct()} {t().hitFolded}</span>
-            <span style={{ fg: data().trend !== 0 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
+            <span style={{ fg: Math.abs(data().trend) >= 0.05 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
               {" "}{trendLabel(data().trend)}
             </span>
           </Show>
@@ -1050,7 +1052,7 @@ function TokenCachePanel(props: {
             <span style={{ fg: hitColor() }}>[{bar()}] </span>
             <span style={{ fg: pal().text }}>{pct()}</span>
             <Show when={data().hasTrendData}>
-              <span style={{ fg: data().trend !== 0 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
+              <span style={{ fg: Math.abs(data().trend) >= 0.05 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
                 {" "}{trendLabel(data().trend)}
               </span>
             </Show>
@@ -1278,7 +1280,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
 
   const sid = props.sessionId
 
-  // ── 命中率 + token 汇总（复用侧边栏口径：最后一条有 token 的 assistant 消息）──
+  // ── 命中率（单条口径：最后一条有 token 的 assistant 消息）+ token 汇总 ──
   const stats = createMemo(() => {
     const id = sid
     if (!id) return null
@@ -1289,7 +1291,19 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     let input = session?.tokens?.input ?? 0
     let read = session?.tokens?.cache?.read ?? 0
     let output = session?.tokens?.output ?? 0
-    let hitRate = -1
+    // 旧 SDK 无 session 聚合字段 → 遍历消息累加（与侧边栏 fallback 一致）
+    if (session?.tokens == null) {
+      for (const m of msgs) {
+        if (m.role !== "assistant") continue
+        const tk = (m as AssistantMessage).tokens
+        if (!tk) continue
+        input += num(tk.input)
+        read += num(tk.cache?.read)
+        output += num(tk.output)
+      }
+    }
+    // 从后往前取最后两条有 token 数据的 assistant 消息 → 单条命中率 + 趋势
+    let hitRate = -1, prevHitRate = -1
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i]
       if (m.role !== "assistant") continue
@@ -1297,9 +1311,13 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
       if (!tk) continue
       const mit = num(tk.input) + num(tk.cache?.read)
       const mrt = num(tk.cache?.read)
-      if (mit > 0) { hitRate = (mrt / mit) * 100; break }
+      if (mit <= 0) continue
+      const rate = (mrt / mit) * 100
+      if (hitRate < 0) { hitRate = rate; continue }
+      prevHitRate = rate
+      break
     }
-    return { hitRate, input, read, output }
+    return { hitRate, prevHitRate, input, read, output }
   })
 
   // ── 余额查询（独立轮询，共享 provider/key 逻辑）──
@@ -1381,6 +1399,14 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     return pal().error
   })
 
+  // 命中率趋势：最后一条与上一条的差值；|Δ| < 0.05 视为无变化（null = 不显示）
+  const trend = createMemo(() => {
+    const s = stats()
+    if (!s || s.prevHitRate < 0 || s.hitRate < 0) return null
+    const d = s.hitRate - s.prevHitRate
+    return Math.abs(d) < 0.05 ? null : d
+  })
+
   const balanceText = createMemo(() => {
     const s = balanceState()
     if (s.status === "ok" && s.data) return formatBalanceText(s.data, props.signals.balanceCurrency(), props.signals.exchangeRate())
@@ -1401,6 +1427,11 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
         <text>
           <span style={{ fg: pal().muted }}>{t().barHit} </span>
           <span style={{ fg: hitColor() }}>{(stats()?.hitRate ?? -1) >= 0 ? (Math.floor(stats()!.hitRate * 10) / 10).toFixed(1) + "%" : "--"}</span>
+          <Show when={trend() !== null}>
+            <span style={{ fg: trend()! > 0 ? pal().success : pal().error }}>
+              {" " + (trend()! > 0 ? "\u2191" : "\u2193") + Math.abs(trend()!).toFixed(1) + "%"}
+            </span>
+          </Show>
           <span style={{ fg: pal().muted }}>{" \u00b7 " + t().barTok + " "}</span>
           <span style={{ fg: pal().text }}>
             {stats() ? fmtCompact(stats()!.input + stats()!.read + stats()!.output) : "--"}
