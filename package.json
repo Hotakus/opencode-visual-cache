@@ -1,6 +1,6 @@
 {
   "name": "opencode-visual-cache",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "OpenCode TUI plugin displaying real-time token cache hit rate in the sidebar",
   "type": "module",
   "types": "dist/index.d.ts",
