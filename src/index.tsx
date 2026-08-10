@@ -259,13 +259,15 @@ function estimateTokens(text: string): number {
 interface TokenDist {
   system: number   // UserMessage.system
   user: number     // user message text/file parts
-  agent: number    // SubtaskPart.prompt + ReasoningPart.text
+  agent: number    // task tool input prompt/description (sub-agent delegation)
   toolCall: number // ToolPart.input (actual tool params)
   toolResult: number // ToolPart completed output / error
-  output: number   // AssistantMessage.tokens.output (fallback)
+  output: number   // AssistantMessage.tokens.output (API exact, reasoning excluded)
+  reasoning: number // AssistantMessage.tokens.reasoning (API exact)
   apiOutput: number // StepFinishPart.tokens.output (API exact, preferred)
   apiInput: number  // API exact total input context (input + cache read + cache write)
-  stepCost: number
+  stepCost: number  // last step-finish part cost (USD) in the current round
+  stepCount: number // step-finish parts count across the current round (parentID chain)
 }
 
 // ---------------------------------------------------------------------------
@@ -472,7 +474,7 @@ function TokenCachePanel(props: {
   // stable until the next successful computation arrives.
   const [lastDist, setLastDist] = createSignal<TokenDist>({
     system: 0, user: 0, agent: 0, toolCall: 0, toolResult: 0,
-    output: 0, apiOutput: 0, apiInput: 0, stepCost: 0,
+    output: 0, reasoning: 0, apiOutput: 0, apiInput: 0, stepCost: 0, stepCount: 0,
   })
   const [lastHasDist, setLastHasDist] = createSignal(false)
 
@@ -481,7 +483,7 @@ function TokenCachePanel(props: {
     cost: 0, saved: 0, model: "", inputRate: 0, cacheReadRate: 0, cacheWriteRate: 0,
     hasPricing: false, hasData: false, trend: 0, hasTrendData: false,
     providerName: "", sessionHitRate: 0,
-    dist: { system: 0, user: 0, agent: 0, toolCall: 0, toolResult: 0, output: 0, apiOutput: 0, apiInput: 0, stepCost: 0 },
+    dist: { system: 0, user: 0, agent: 0, toolCall: 0, toolResult: 0, output: 0, reasoning: 0, apiOutput: 0, apiInput: 0, stepCost: 0, stepCount: 0 },
     hasDistData: false,
     skills: [] as { name: string; tokens: number }[],
     hasSkills: false,
@@ -599,7 +601,7 @@ function TokenCachePanel(props: {
 
     // untrack 只包裹已知触发死锁的 API
     const distData = untrack(() => {
-      let dist: TokenDist = { system: 0, user: 0, agent: 0, toolCall: 0, toolResult: 0, output: 0, apiOutput: 0, apiInput: 0, stepCost: 0 }
+      let dist: TokenDist = { system: 0, user: 0, agent: 0, toolCall: 0, toolResult: 0, output: 0, reasoning: 0, apiOutput: 0, apiInput: 0, stepCost: 0, stepCount: 0 }
       let hasDistData = false
       const loadedSkills = new Map<string, { name: string; tokens: number }>()
       try {
@@ -621,12 +623,20 @@ function TokenCachePanel(props: {
           } else if (msg.role === "assistant") {
             const am = msg as AssistantMessage
             dist.output += num(am.tokens?.output)
+            dist.reasoning += num(am.tokens?.reasoning)
             let parts: readonly Part[] = []; try { parts = props.api.state.part(msg.id) } catch {}
             for (const p of parts) {
               if (p.type === "tool") {
                 const tp = p as any; let rawInput = ""
                 try { rawInput = tp.state.raw ?? (tp.state.input != null ? JSON.stringify(tp.state.input) : "") } catch {}
                 if (rawInput) dist.toolCall += estimateTokens(rawInput)
+                // 子代理委托（task 工具）：任务描述计入子代理指令（1.15.x 无 subtask part）
+                if (tp.tool === "task" && tp.state?.input) {
+                  const ti = tp.state.input
+                  const prompt = typeof ti.prompt === "string" ? ti.prompt : ""
+                  const desc = typeof ti.description === "string" ? ti.description : ""
+                  dist.agent += estimateTokens(prompt || desc)
+                }
                 if (tp.state.status === "completed") { const c = tp.state; if (c.output) dist.toolResult += estimateTokens(c.output) }
                 else if (tp.state.status === "error") { const e = tp.state; if (e.error) dist.toolResult += estimateTokens(e.error) }
                 if (tp.tool === "skill" && tp.state.status === "completed") {
@@ -647,8 +657,7 @@ function TokenCachePanel(props: {
                     }
                   }
                 }
-              } else if (p.type === "reasoning") dist.agent += estimateTokens((p as any).text)
-              else if (p.type === "subtask") { const sub = p as any; dist.agent += estimateTokens(sub.prompt || sub.description || "") }
+              } else if (p.type === "subtask") { const sub = p as any; dist.agent += estimateTokens(sub.prompt || sub.description || "") }
             }
           }
         }
@@ -661,7 +670,27 @@ function TokenCachePanel(props: {
         // 取最后一条有数据消息的总输入（含缓存读/写）作为当前 context 大小
         dist.apiInput = num(lastAssMsg?.tokens?.input) + num(lastAssMsg?.tokens?.cache?.read) + num(lastAssMsg?.tokens?.cache?.write)
         dist.apiOutput = num(lastAssMsg?.tokens?.output)
-        hasDistData = dist.system + dist.user + dist.agent + dist.toolCall + dist.toolResult > 0 || dist.apiOutput > 0 || dist.apiInput > 0
+        // 本回合（最后一条有数据消息所在的 parentID 链）的 API 调用次数与末次成本。
+        // opencode 将回合内每次工具调用循环拆为独立 assistant 消息（各含 1 个 step-finish），
+        // 故按 parentID 链聚合统计，而非单条消息。
+        if (lastAssMsg) {
+          const roundParent = (lastAssMsg as AssistantMessage).parentID
+          let lastCost: number | undefined
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i]
+            if (m.role !== "assistant") continue
+            if ((m as AssistantMessage).parentID !== roundParent) break
+            let parts: readonly Part[] = []; try { parts = props.api.state.part(m.id) } catch {}
+            for (const p of parts) {
+              if (p.type !== "step-finish") continue
+              dist.stepCount++
+              const sc = (p as { cost?: unknown }).cost
+              if (lastCost === undefined && typeof sc === "number" && Number.isFinite(sc)) lastCost = sc
+            }
+          }
+          if (lastCost !== undefined) dist.stepCost = lastCost
+        }
+        hasDistData = dist.system + dist.user + dist.agent + dist.toolCall + dist.toolResult > 0 || dist.apiOutput > 0 || dist.apiInput > 0 || dist.reasoning > 0
       } catch {}
       const finalDist = hasDistData ? dist : lastDist(), finalHasDist = hasDistData || lastHasDist()
       const skills = [...loadedSkills.values()]
@@ -976,6 +1005,12 @@ function TokenCachePanel(props: {
             <text fg={pal().muted}>
               {justify(t("out"),   fmt(data().output),       t("tok"))}
             </text>
+            {/* 本回合多次 API 调用时才显示调用次数与末次成本（单次调用不占行） */}
+            <Show when={data().dist.stepCount >= 2}>
+              <text fg={pal().muted}>
+                {justify(t("stepsCount", { n: data().dist.stepCount }), fmtCost(data().dist.stepCost, currencySymbol(), exchangeRate()))}
+              </text>
+            </Show>
             <Show when={data().saved > 0}>
               <text>
                 <span style={{ fg: pal().muted }}>{t("saved")}</span>
@@ -1058,9 +1093,11 @@ function TokenCachePanel(props: {
                 {justify(t("distRes"), fmt(data().dist.toolResult), t("tok"))}
               </text>
             </Show>
-            <text fg={pal().text}>
-              {justify(t("distTotal"), fmt(data().dist.apiInput), t("tok"))}
-            </text>
+            <Show when={data().dist.reasoning > 0}>
+              <text fg={pal().muted}>
+                {justify(t("distReason"), fmt(data().dist.reasoning), t("tok"))}
+              </text>
+            </Show>
             </Show>
           </Show>
           </Show>

@@ -46,7 +46,7 @@ Interested in sub-agent monitoring? Check out [opencode-subagent-magazine](https
 - **Model Pricing**: Input / cache-read / cache-write per-million rates (read from provider config dynamically)
 - **Collapsible**: Main title collapsed by default; click to expand. Detail, model, and distribution sections fold independently
 - **Adaptive Colors**: ≥85% green · ≥70% orange · <70% red, auto-desaturated from current theme
-- **Token Distribution**: Per-role (system / user / agent instr / tool call / tool result) estimated token breakdown
+- **Token Distribution**: Per-role (system / user / sub-agent instr / tool call / tool result) estimated token breakdown
 - **Persistent State**: Fold preferences and config remembered across restarts via api.kv
 - **Language**: Chinese / English / 日本語 / 한국어, auto-detects system locale, with `/cache-lang` for runtime switching — user preference takes priority over auto-detection
 - **Multi-currency**: Switch via `/cache-currency` — costs, savings, and per-million rates convert in real time
@@ -149,6 +149,8 @@ Three sub-sections can be toggled independently to save sidebar space:
 - **Bottom Status Bar**: the single-line hit rate · Tokens · Balance stats in the prompt hint row
 
 Toggled via `/cache-section` — takes effect instantly, no restart required. The same command also toggles the panel **border**; turning it off removes the outline and padding so content fills the full width.
+
+> **About Token Dist. values**: "Reasoning" is an exact value from the API; the other rows (system / user / sub-agent instr / tool call / tool result) are **estimates** — the API only reports total token counts, not how they split across content types, so the plugin collects text per content type and approximates via character counting. Values are indicative only. OpenCode runtime-injected system prompt content (environment info, skill catalog, tool schema definitions — see [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts), [`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)) is not covered by these estimates.
 
 ### 4.4 Balance Query
 

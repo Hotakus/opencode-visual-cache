@@ -46,7 +46,7 @@
 - **模型定价**：显示当前模型的输入 / 缓存读 / 缓存写单价（从 provider 配置动态读取）
 - **折叠面板**：主标题默认折叠，点击展开；明细、模型、分布各自独立折叠
 - **颜色自适应**：命中率 ≥85% 绿 · ≥70% 橙 · <70% 红，颜色从主题色自动去饱和
-- **Token 分布**：按角色（系统提示 / 用户 / Agent 指令 / Tool 调用 / Tool 结果）展示估算 Token 占比
+- **Token 分布**：按角色（系统提示 / 用户 / 子代理指令 / Tool 调用 / Tool 结果）展示估算 Token 占比
 - **折叠记忆**：折叠状态持久化，重启后保持
 - **语言适配**：支持 中文 / English / 日本語 / 한국어，自动检测系统语言，`/cache-lang` 运行时切换，偏好持久化优先
 - **多币种**：通过 `/cache-currency` 切换货币，费用和节省同步换算
@@ -150,7 +150,7 @@ npm install -g opencode-visual-cache@latest
 
 通过 `/cache-section` 切换后即时生效，无需重启。此外，该命令还可以开关面板的**外边框**——关闭后内容会顶格显示，释放额外空间。
 
-> **关于 Token 分布数值**：分布面板中"总计"为最后一次 API 调用的精确 token 数，"系统提示"/"用户"等分项为字符级 BPE 估算值。分项之和通常小于总计，差值主要来自 OpenCode 运行时注入的系统提示组成部分，包括环境信息、Skill 目录、工具 Schema 定义等（详见 [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts)、[`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)）。这些内容不在 agent 配置的 `prompt` 字段中，因此插件无法估算，属于预期行为。
+> **关于 Token 分布数值**：分布面板中"推理"为 API 返回的**精确值**；"系统提示"/"用户"/"子代理指令"/"Tool 调用"/"Tool 结果"为**估算值**——API 仅返回 token 总量，无法拆分各内容类型，插件按内容类型收集文本后基于字符计数近似估算，数值仅供参考。OpenCode 运行时注入的系统提示内容（环境信息、Skill 目录、工具 Schema 定义等，详见 [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts)、[`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)）不在此估算范围内。
 
 ### 4.4 余额查询
 
