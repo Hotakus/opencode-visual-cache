@@ -124,6 +124,7 @@ const ZH_T = {
   balErr403:  "余额查询被拒绝",
   balErrEmpty:"未获取到余额数据",
   balErrTimeout: "查询超时",
+  balUnsupported: "当前提供商不支持余额查询",
   barHit:     "命中率",
   barBal:     "余额",
   barTok:     "Tokens",
@@ -167,6 +168,7 @@ const EN_T = {
   balErr403:  "Balance request rejected",
   balErrEmpty:"No balance data",
   balErrTimeout: "Request timed out",
+  balUnsupported: "Balance query unsupported",
   barHit:     "Hit",
   barBal:     "Balance",
   barTok:     "Tokens",
@@ -477,6 +479,9 @@ interface PanelSignals {
   /** Auto-switch to the session's provider for balance display. Manual switch disables it. */
   autoBalance: () => boolean
   setAutoBalance: (v: boolean) => void
+  /** True when the session's provider has no balance adapter (auto mode). Suppresses balance polling. */
+  balanceUnsupported: () => boolean
+  setBalanceUnsupported: (v: boolean) => void
   /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
   balanceCurrency: () => string
   setBalanceCurrency: (v: string) => void
@@ -535,6 +540,7 @@ function TokenCachePanel(props: {
     balanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
+    balanceUnsupported, setBalanceUnsupported,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
   } = props.signals
@@ -584,6 +590,7 @@ function TokenCachePanel(props: {
     // 手动配置的 key 优先；缺失时自动复用 OpenCode 已认证的 key（auth.json / config）
     const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
       || findOpencodeKey(props.api, provider)
+    if (balanceUnsupported()) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
     if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
     const now = Date.now()
     const prev = balanceState()
@@ -642,9 +649,15 @@ function TokenCachePanel(props: {
     }
     if (!pid) return
     const hit = matchBalanceProvider(pid)
-    if (hit && hit.id !== balanceProviderId()) {
-      setBalanceProviderId(hit.id)
-      props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+    if (hit) {
+      setBalanceUnsupported(false)
+      if (hit.id !== balanceProviderId()) {
+        setBalanceProviderId(hit.id)
+        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+      }
+    } else {
+      // 当前提供商没有余额适配器 → 标记不支持，余额显示 N/A 并停止轮询
+      setBalanceUnsupported(true)
     }
   })
 
@@ -851,6 +864,7 @@ function TokenCachePanel(props: {
         const savedProvider = props.api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
         if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
           setBalanceProviderId(savedProvider)
+          setBalanceUnsupported(false)
         }
         // Restore auto-switch (default on)
         const savedAuto = props.api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
@@ -1212,38 +1226,46 @@ function TokenCachePanel(props: {
           </Show>
           </Show>
 
-          {/* ── DeepSeek balance (single line) ── */}
+          {/* ── provider balance (single line) ── */}
           <Show when={sectionBalance()}>
             <text fg={pal().muted}>{sep()}</text>
-            <Show when={balanceState().status === "idle"}>
+            <Show when={balanceUnsupported()}>
               <text fg={pal().muted}>
                 <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{t().balNoKey.replace("{p}", providerName())}</span>
+                <span>{t().balUnsupported}</span>
               </text>
             </Show>
-            <Show when={balanceState().status === "loading"}>
-              <text fg={pal().muted}>
-                <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{t().balLoading}</span>
-              </text>
-            </Show>
-            <Show when={balanceState().status === "error"}>
-              <text fg={pal().error}>
-                <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{(() => {
-                  const code = balanceState().error
-                  if (code === "401") return t().balErr401
-                  if (code === "403") return t().balErr403
-                  if (code === "EMPTY") return t().balErrEmpty
-                  if (code === "TIMEOUT") return t().balErrTimeout
-                  return t().balError + (code ? ` (${code})` : "")
-                })()}</span>
-              </text>
-            </Show>
-            <Show when={balanceState().status === "ok" && balanceState().data}>
-              <text fg={pal().text}>
-                {justify(t().balTotal, formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
-              </text>
+            <Show when={!balanceUnsupported()}>
+              <Show when={balanceState().status === "idle"}>
+                <text fg={pal().muted}>
+                  <span style={{ fg: pal().muted }}>{"> "}</span>
+                  <span>{t().balNoKey.replace("{p}", providerName())}</span>
+                </text>
+              </Show>
+              <Show when={balanceState().status === "loading"}>
+                <text fg={pal().muted}>
+                  <span style={{ fg: pal().muted }}>{"> "}</span>
+                  <span>{t().balLoading}</span>
+                </text>
+              </Show>
+              <Show when={balanceState().status === "error"}>
+                <text fg={pal().error}>
+                  <span style={{ fg: pal().muted }}>{"> "}</span>
+                  <span>{(() => {
+                    const code = balanceState().error
+                    if (code === "401") return t().balErr401
+                    if (code === "403") return t().balErr403
+                    if (code === "EMPTY") return t().balErrEmpty
+                    if (code === "TIMEOUT") return t().balErrTimeout
+                    return t().balError + (code ? ` (${code})` : "")
+                  })()}</span>
+                </text>
+              </Show>
+              <Show when={balanceState().status === "ok" && balanceState().data}>
+                <text fg={pal().text}>
+                  {justify(t().balTotal, formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
+                </text>
+              </Show>
             </Show>
           </Show>
         </Show>
@@ -1317,6 +1339,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     const provider = getBalanceProvider(props.signals.balanceProviderId())
     const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
       || findOpencodeKey(props.api, provider)
+    if (props.signals.balanceUnsupported()) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
     if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
     const now = Date.now()
     const prev = balanceState()
@@ -1360,9 +1383,15 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     }
     if (!pid) return
     const hit = matchBalanceProvider(pid)
-    if (hit && hit.id !== props.signals.balanceProviderId()) {
-      props.signals.setBalanceProviderId(hit.id)
-      props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+    if (hit) {
+      props.signals.setBalanceUnsupported(false)
+      if (hit.id !== props.signals.balanceProviderId()) {
+        props.signals.setBalanceProviderId(hit.id)
+        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+      }
+    } else {
+      // 当前提供商没有余额适配器 → 标记不支持，余额显示 N/A 并停止轮询
+      props.signals.setBalanceUnsupported(true)
     }
   })
 
@@ -1432,8 +1461,10 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
           <span style={{ fg: pal().text }}>
             {stats() ? fmtCompact(stats()!.input + stats()!.read + stats()!.output) : "--"}
           </span>
-          <span style={{ fg: pal().muted }}>{" \u00b7 " + t().barBal + " "}</span>
-          <span style={{ fg: pal().text }}>{balanceText()}</span>
+          <Show when={!props.signals.balanceUnsupported()}>
+            <span style={{ fg: pal().muted }}>{" \u00b7 " + t().barBal + " "}</span>
+            <span style={{ fg: pal().text }}>{balanceText()}</span>
+          </Show>
         </text>
         <text fg={pal().muted}>{" \u00b7 "}</text>
         </box>
@@ -1482,6 +1513,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [autoBalance, setAutoBalance] = createSignal(true)
+  const [balanceUnsupported, setBalanceUnsupported] = createSignal(false)
   const [balanceCurrency, setBalanceCurrency] = createSignal("")
   const [borderVisible, setBorderVisible] = createSignal(true)
   const [langZH, setLangZH] = createSignal(LANG_ZH)
@@ -1500,6 +1532,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
+    balanceUnsupported, setBalanceUnsupported,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
     overrideSessionId, setOverrideSessionId,
@@ -1779,6 +1812,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 api.kv.set(`${KV_PREFIX}.balance.auto`, false)
                 signals.setBalanceProviderId(provider.id)
                 signals.setAutoBalance(false)
+                signals.setBalanceUnsupported(false)
                 // 切换后立即按新 provider 刷新显示（无 key 时显示 idle，避免残留上一 provider 余额）
                 signals.setBalanceRefresh(signals.balanceRefresh() + 1)
                 const hasKey = !!api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
