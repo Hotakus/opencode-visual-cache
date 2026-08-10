@@ -150,6 +150,8 @@ Three sub-sections can be toggled independently to save sidebar space:
 
 Toggled via `/cache-section` — takes effect instantly, no restart required. The same command also toggles the panel **border**; turning it off removes the outline and padding so content fills the full width.
 
+> **About Token Dist. values**: The "Total" row is the exact token count of the **last API call** (input + cache read + cache write); the per-role rows (system / user / agent instr / tool call / tool result) are character-based BPE **estimates accumulated across the whole session**, and "Reasoning"/"Output" are exact API values accumulated across the session. The breakdown rows and the Total have **different scopes** (session cumulative vs. last call) and are **not directly comparable** — the breakdown only shows the rough composition of each content type in the session. OpenCode also injects extra system prompt content at runtime — environment info, skill catalog, tool schema definitions (see [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts), [`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)) — which the plugin cannot estimate. Output already excludes reasoning tokens per OpenCode's accounting.
+
 ### 4.4 Balance Query
 
 The panel can display account balance from multiple AI providers. With **auto-switch** enabled, the balance query follows the model provider of the current session automatically.
