@@ -465,6 +465,9 @@ interface PanelSignals {
   setSectionSkills: (v: boolean) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
+  /** Bottom status bar (prompt hint line) visibility. */
+  sectionBottom: () => boolean
+  setSectionBottom: (v: boolean) => void
   /** Increment to force a balance re-fetch. */
   balanceRefresh: () => number
   setBalanceRefresh: (v: number) => void
@@ -1404,9 +1407,18 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     try { return props.api.state.path.directory } catch { return "" }
   })
 
+  // 恢复显隐偏好（默认显示）；关闭时回退为仅显示路径，与宿主默认 hint 行一致
+  onMount(() => {
+    try {
+      const v = props.api.kv.get<boolean>(`${KV_PREFIX}.section.bottom`, true)
+      props.signals.setSectionBottom(v !== false)
+    } catch {}
+  })
+
   return (
-    <box marginLeft={1} flexGrow={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
-      <text fg={pal().muted}>{directory()}</text>
+    <Show when={props.signals.sectionBottom()} fallback={<text fg={pal().muted}>{directory()}</text>}>
+      <box marginLeft={1} flexGrow={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
+        <text fg={pal().muted}>{directory()}</text>
       <box flexDirection="row">
         <text>
           <span style={{ fg: pal().muted }}>{t().barHit} </span>
@@ -1424,8 +1436,9 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
           <span style={{ fg: pal().text }}>{balanceText()}</span>
         </text>
         <text fg={pal().muted}>{" \u00b7 "}</text>
+        </box>
       </box>
-    </box>
+    </Show>
   )
 }
 
@@ -1465,6 +1478,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionDist, setSectionDist] = createSignal(true)
   const [sectionSkills, setSectionSkills] = createSignal(true)
   const [sectionBalance, setSectionBalance] = createSignal(true)
+  const [sectionBottom, setSectionBottom] = createSignal(true)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [autoBalance, setAutoBalance] = createSignal(true)
@@ -1482,6 +1496,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     sectionDist, setSectionDist,
     sectionSkills, setSectionSkills,
     sectionBalance, setSectionBalance,
+    sectionBottom, setSectionBottom,
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
@@ -1640,6 +1655,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         const distOn   = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
         const skillsOn = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
         const balanceOn = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
+        const bottomOn = Boolean(api.kv.get(`${KV_PREFIX}.section.bottom`, true))
         const borderOn = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
         dialog?.replace(() => (
           <api.ui.DialogSelect
@@ -1650,6 +1666,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               { title: `Token Dist.     [${distOn   ? "ON" : "OFF"}]`,  value: "dist" },
               { title: `Loaded Skills   [${skillsOn ? "ON" : "OFF"}]`,  value: "skills" },
               { title: `Balance         [${balanceOn ? "ON" : "OFF"}]`, value: "balance" },
+              { title: `Bottom Bar      [${bottomOn ? "ON" : "OFF"}]`,  value: "bottom" },
               { title: `Panel Border    [${borderOn ? "ON" : "OFF"}]`,  value: "border" },
             ]}
             onSelect={(opt) => {
@@ -1667,6 +1684,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 if (opt.value === "dist")   signals.setSectionDist(!cur)
                 if (opt.value === "skills") signals.setSectionSkills(!cur)
                 if (opt.value === "balance") signals.setSectionBalance(!cur)
+                if (opt.value === "bottom")  signals.setSectionBottom(!cur)
                 api.ui.toast({ message: `${opt.value} section ${!cur ? "shown" : "hidden"}` })
               }
               dialog?.clear()
@@ -1688,9 +1706,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         const dist = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
         const skills = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
         const balance = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
+        const bottom = Boolean(api.kv.get(`${KV_PREFIX}.section.bottom`, true))
         api.ui.toast({
           title: "Cache Panel Config",
-          message: `Currency: ${sym}  |  Rate: ${rate}  |  Detail: ${detail ? "ON" : "OFF"}  |  Model: ${model ? "ON" : "OFF"}  |  Dist: ${dist ? "ON" : "OFF"}  |  Skills: ${skills ? "ON" : "OFF"}  |  Balance: ${balance ? "ON" : "OFF"}`,
+          message: `Currency: ${sym}  |  Rate: ${rate}  |  Detail: ${detail ? "ON" : "OFF"}  |  Model: ${model ? "ON" : "OFF"}  |  Dist: ${dist ? "ON" : "OFF"}  |  Skills: ${skills ? "ON" : "OFF"}  |  Balance: ${balance ? "ON" : "OFF"}  |  Bottom: ${bottom ? "ON" : "OFF"}`,
           duration: 8000,
         })
         dialog?.clear()
