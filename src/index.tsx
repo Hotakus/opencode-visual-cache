@@ -9,6 +9,7 @@ import type {
   TuiPluginModule,
   TuiThemeCurrent,
   TuiDialogStack,
+  TuiPromptRef,
 } from "@opencode-ai/plugin/tui"
 import type { UserMessage, AssistantMessage, Message } from "@opencode-ai/sdk"
 import type {
@@ -21,6 +22,7 @@ import type {
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, untrack } from "solid-js"
 import { PLUGIN_VERSION } from "./_version"
 import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry, type BalanceProvider } from "./balance-providers"
+import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,97 +75,14 @@ function truncateVisual(s: string, maxCols: number): string {
   return result
 }
 
-// ── language override (env: CACHE_TUI_LANG) ──
-const DEBUG_LANG = typeof process !== "undefined" ? process.env?.CACHE_TUI_LANG : undefined
-
 // ── language ──────────────────────────────────────────────────────
+// 语言初始化：环境变量 CACHE_TUI_LANG 覆盖 → 否则按系统 locale 自动检测。
+// 用户通过 /cache-lang 设置的偏好会在 KV 就绪后优先覆盖（见 tui() 内恢复逻辑）。
 
-const LANG_ZH = DEBUG_LANG
-  ? DEBUG_LANG === "zh"
-  : (() => {
-      try { return Intl.DateTimeFormat().resolvedOptions().locale.startsWith("zh") }
-      catch { return false }
-    })()
-
-const ZH_T = {
-  title:      "缓存统计",
-  hit:        "命中率",
-  totalHit:   "总命中:",
-  read:       "缓存读:",
-  write:      "缓存写:",
-  miss:       "未命中:",
-  out:        "输出:",
-  cost:       "费用:",
-  saved:      "累计节省:",
-  model:      "模型:",
-  provider:   "提供商:",
-  rate:       "单价:",
-  hitFolded:  "命中",
-  inputRate:  "输入",
-  cacheRate:  "缓存",
-  writeRate:  "写入",
-  noData:    "等待缓存数据...",
-  tok:        "tok",
-  distTitle:  "估算 Token 分布",
-  distSys:    "系统提示:",
-  distUser:   "用户:",
-  distAgent:  "Agent 指令:",
-  distTool:   "Tool 调用:",
-  distRes:    "Tool 结果:",
-  distTotal:  "总计:",
-  distOut:    "输出:",
-  secDetail:  "明细",
-  secModel:   "模型",
-  secSkills:  "已加载技能",
-  balTotal:   "总余额:",
-  balNoKey:   "未配置 {p} API Key",
-  balLoading: "查询中...",
-  balError:   "查询失败",
-  balErr401:  "API Key 无效",
-  balErr403:  "余额查询被拒绝",
-  balErrEmpty:"未获取到余额数据",
-  balErrTimeout: "查询超时",
-} as const
-
-const EN_T = {
-  title:      "Token Cache",
-  hit:        "Hit",
-  totalHit:   "Total Hit:",
-  read:       "Read:",
-  write:      "Write:",
-  miss:       "Miss:",
-  out:        "Out:",
-  cost:       "Cost:",
-  saved:      "Total Saved:",
-  model:      "Model:",
-  provider:   "Provider:",
-  rate:       "Rate:",
-  hitFolded:  "hit",
-  inputRate:  "in",
-  cacheRate:  "cache",
-  writeRate:  "write",
-  noData:    "Waiting for cache data...",
-  tok:        "tok",
-  distTitle:  "Estimated Token Dist.",
-  distSys:    "System:",
-  distUser:   "User:",
-  distAgent:  "Agent Instr:",
-  distTool:   "Tool Call:",
-  distRes:    "Tool Result:",
-  distTotal:  "Total:",
-  distOut:    "Output:",
-  secDetail:  "Detail",
-  secModel:   "Model",
-  secSkills:  "Loaded Skills",
-  balTotal:   "Total:",
-  balNoKey:   "{p} API Key not set",
-  balLoading: "Fetching...",
-  balError:   "Fetch failed",
-  balErr401:  "Invalid API Key",
-  balErr403:  "Balance request rejected",
-  balErrEmpty:"No balance data",
-  balErrTimeout: "Request timed out",
-} as const
+const DEBUG_LANG = typeof process !== "undefined" ? process.env?.CACHE_TUI_LANG : undefined
+const INIT_LANG: LangCode = DEBUG_LANG !== undefined && LANG_META.some((m) => m.code === DEBUG_LANG)
+  ? (DEBUG_LANG as LangCode)
+  : detectLang()
 
 // ── color helpers ────────────────────────────────────────────────
 
@@ -224,7 +143,7 @@ function desaturateTo(raw: unknown, maxSat: number, fallback: string): string {
    * converges to within a fraction of an 8‑bit step, eliminating
    * colour banding in edge cases.
    */
-  // BT.601 luma (perceptual brightness used as the grey anchor)
+  // Bt.601 luma (perceptual brightness used as the grey anchor)
   const luma = c.r * 0.299 + c.g * 0.587 + c.b * 0.114
   let lo = 0, hi = 1
   for (let i = 0; i < 12; i++) {
@@ -345,7 +264,7 @@ interface TokenDist {
   toolResult: number // ToolPart completed output / error
   output: number   // AssistantMessage.tokens.output (fallback)
   apiOutput: number // StepFinishPart.tokens.output (API exact, preferred)
-  apiInput: number  // StepFinishPart.tokens.input (API exact total context)
+  apiInput: number  // API exact total input context (input + cache read + cache write)
   stepCost: number
 }
 
@@ -401,6 +320,39 @@ function balanceSymbol(currency: string): string {
   return sym ?? currency + " "
 }
 
+/** 紧凑数字缩写（底部状态栏用）：1234 → "1.2K"，1234567 → "1.2M"。 */
+function fmtCompact(n: number): string {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M"
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K"
+  return String(Math.round(n))
+}
+
+/** 余额数值格式化：≥1 或 0 显示固定 2 位小数；小额（<1）保留精度（最多 6 位），避免抹成 0.00。 */
+function formatBalanceAmount(total: string): string {
+  const n = parseFloat(total)
+  if (!Number.isFinite(n)) return total
+  if (n === 0 || n >= 1) return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return n.toLocaleString("en-US", { maximumFractionDigits: 6 })
+}
+
+/**
+ * 将余额列表格式化为单行文本。
+ * 优先直接显示偏好币种（CNY/USD…）；偏好币种为换算币种时按汇率折算第一条余额。
+ */
+function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): string {
+  const native = pref ? list.find((x) => x.currency === pref) : undefined
+  if (native) return balanceSymbol(native.currency) + formatBalanceAmount(native.total)
+  const base = list[0]
+  const baseAmt = parseFloat(base.total)
+  const converted = Number.isFinite(baseAmt)
+    ? convertBalance(pref || base.currency, rate, baseAmt, base.currency)
+    : baseAmt
+  const shown = pref && base.currency !== pref
+    ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
+    : formatBalanceAmount(base.total)
+  return balanceSymbol(pref || base.currency) + shown
+}
+
 // ---------------------------------------------------------------------------
 // Sidebar component
 // ---------------------------------------------------------------------------
@@ -413,8 +365,8 @@ interface PanelSignals {
   setCurrencySymbol: (v: string) => void
   exchangeRate: () => number
   setExchangeRate: (v: number) => void
-  langZH: () => boolean
-  setLangZH: (v: boolean) => void
+  langCode: () => LangCode
+  setLangCode: (v: LangCode) => void
   sectionDetail: () => boolean
   setSectionDetail: (v: boolean) => void
   sectionModel: () => boolean
@@ -425,6 +377,9 @@ interface PanelSignals {
   setSectionSkills: (v: boolean) => void
   sectionBalance: () => boolean
   setSectionBalance: (v: boolean) => void
+  /** Bottom status bar (prompt hint line) visibility. */
+  sectionBottom: () => boolean
+  setSectionBottom: (v: boolean) => void
   /** Increment to force a balance re-fetch. */
   balanceRefresh: () => number
   setBalanceRefresh: (v: number) => void
@@ -434,6 +389,11 @@ interface PanelSignals {
   /** Auto-switch to the session's provider for balance display. Manual switch disables it. */
   autoBalance: () => boolean
   setAutoBalance: (v: boolean) => void
+  /** True when the session's provider has no balance adapter (auto mode). Suppresses balance polling. */
+  balanceUnsupported: () => boolean
+  setBalanceUnsupported: (v: boolean) => void
+  /** Shared balance query state — single source of truth for sidebar and bottom bar. */
+  balanceState: () => BalanceState
   /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
   balanceCurrency: () => string
   setBalanceCurrency: (v: string) => void
@@ -483,7 +443,7 @@ function TokenCachePanel(props: {
   const {
     currencySymbol, setCurrencySymbol,
     exchangeRate, setExchangeRate,
-    langZH, setLangZH,
+    langCode,
     sectionDetail, setSectionDetail,
     sectionModel, setSectionModel,
     sectionDist, setSectionDist,
@@ -492,12 +452,14 @@ function TokenCachePanel(props: {
     balanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
+    balanceUnsupported, setBalanceUnsupported,
+    balanceState,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
   } = props.signals
 
-  // ── reactive translation (follows langZH signal) ──
-  const t = createMemo(() => langZH() ? ZH_T : EN_T)
+  // ── reactive translation (follows langCode signal) ──
+  const t = createT(() => langCode())
 
   // ── scan session messages reactively ──
   // SolidJS createMemo re-evaluates whenever the underlying
@@ -526,53 +488,8 @@ function TokenCachePanel(props: {
   })
   const [refreshTick, setRefreshTick] = createSignal(0)
 
-  // ── balance state + polling ──────────────────────────────────
-  const [balanceState, setBalanceState] = createSignal<BalanceState>({
-    status: "idle", data: null, lastFetch: 0,
-  })
-  // 请求序号：防止定时轮询与手动刷新并发时，慢的旧请求覆盖新结果
-  let balanceSeq = 0
-
-  // 当前 provider 显示名
+  // 当前 provider 显示名（余额查询状态为共享信号，见 PanelSignals.balanceState）
   const providerName = createMemo(() => getBalanceProvider(balanceProviderId()).name)
-
-  const pollBalance = async () => {
-    const provider = getBalanceProvider(balanceProviderId())
-    // 手动配置的 key 优先；缺失时自动复用 OpenCode 已认证的 key（auth.json / config）
-    const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
-      || findOpencodeKey(props.api, provider)
-    if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
-    const now = Date.now()
-    const prev = balanceState()
-    // key 已更换（重新输入）→ 强制重新查询，绕过缓存
-    if (prev.status === "ok" && prev.key === key && now - prev.lastFetch < BALANCE_POLL_MS) return // cache still fresh
-    const seq = ++balanceSeq
-    setBalanceState({ ...prev, status: "loading", error: undefined, key })
-    const controller = new AbortController()
-    let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
-    try {
-      const data = await provider.fetchBalance(key, controller.signal)
-      clearTimeout(timer)
-      if (seq !== balanceSeq) return // 已被更新的请求取代，丢弃过期结果
-      setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
-    } catch (err) {
-      clearTimeout(timer)
-      if (seq !== balanceSeq) return
-      const code = timedOut ? "TIMEOUT" : (err instanceof Error ? err.message : "")
-      // 失败时清空旧数据，避免显示过期余额
-      setBalanceState({ status: "error", data: null, lastFetch: 0, error: code, key })
-    }
-  }
-
-  // Re-fetch when the API key is (re)configured via /cache-balance-key.
-  // 注意：pollBalance 内部读写 balanceState 信号，若不做 untrack 包裹，
-  // effect 会追踪 balanceState 的变化并与 pollBalance 的 setBalanceState
-  // 形成无限循环（每次重跑都发起新的 fetch 请求）。
-  createEffect(() => {
-    void balanceRefresh()
-    untrack(() => { void pollBalance() })
-  })
 
   // 自动切换当前会话的 provider（前缀匹配）。手动切换会关闭此行为。
   // 直接追踪 messages 取最后一条 assistant 消息的 providerID——
@@ -599,9 +516,15 @@ function TokenCachePanel(props: {
     }
     if (!pid) return
     const hit = matchBalanceProvider(pid)
-    if (hit && hit.id !== balanceProviderId()) {
-      setBalanceProviderId(hit.id)
-      props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+    if (hit) {
+      setBalanceUnsupported(false)
+      if (hit.id !== balanceProviderId()) {
+        setBalanceProviderId(hit.id)
+        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+      }
+    } else {
+      // 当前提供商没有余额适配器 → 标记不支持，余额显示 N/A 并停止轮询
+      setBalanceUnsupported(true)
     }
   })
 
@@ -646,11 +569,11 @@ function TokenCachePanel(props: {
     let prevMsgHitRate = -1, lastMsgHitRate = -1
     for (const msg of msgs) {
       if (msg.role !== "assistant") continue
-      const t = (msg as AssistantMessage).tokens; if (!t) continue
-      const mit = num(t.input) + num(t.cache?.read), mrt = num(t.cache?.read)
+      const tok = (msg as AssistantMessage).tokens; if (!tok) continue
+      const mit = num(tok.input) + num(tok.cache?.read) + num(tok.cache?.write), mrt = num(tok.cache?.read)
       if (mit > 0) { prevMsgHitRate = lastMsgHitRate; lastMsgHitRate = (mrt / mit) * 100 }
       if (fallbackTokens) {
-        input += num(t.input); read += num(t.cache?.read); write += num(t.cache?.write); output += num(t.output)
+        input += num(tok.input); read += num(tok.cache?.read); write += num(tok.cache?.write); output += num(tok.output)
       }
       if (fallbackCost) {
         cost += num((msg as AssistantMessage).cost)
@@ -668,7 +591,8 @@ function TokenCachePanel(props: {
       break
     }
     const hitRate = lastMsgHitRate >= 0 ? lastMsgHitRate : 0
-    const freshTotal = input + read, sessionHitRate = freshTotal > 0 ? (read / freshTotal) * 100 : 0
+    // 总命中率分母含缓存写（业界口径：read / (input+read+write)）
+    const freshTotal = input + read + write, sessionHitRate = freshTotal > 0 ? (read / freshTotal) * 100 : 0
     const model = mid.split("/").pop() ?? mid, hasPricing = inputRate > 0 || cacheReadRate > 0 || cacheWriteRate > 0
     const hasTrendData = prevMsgHitRate >= 0 && lastMsgHitRate >= 0
     const trend = hasTrendData ? lastMsgHitRate - prevMsgHitRate : 0, providerName = pid || ""
@@ -731,11 +655,11 @@ function TokenCachePanel(props: {
         // 从后往前找最后一条有 token 数据的 assistant 消息（避免取到 streaming 中未填充的消息）
         for (let i = msgs.length - 1; i >= 0; i--) {
           if (msgs[i].role !== "assistant") continue
-          const t = (msgs[i] as AssistantMessage).tokens
-          if (t && (t.input > 0 || (t.cache?.read ?? 0) > 0)) { lastAssMsg = msgs[i] as AssistantMessage; break }
+          const tok = (msgs[i] as AssistantMessage).tokens
+          if (tok && ((tok.input ?? 0) > 0 || (tok.cache?.read ?? 0) > 0 || (tok.cache?.write ?? 0) > 0)) { lastAssMsg = msgs[i] as AssistantMessage; break }
         }
-        // 取最后一条有数据消息的总输入（含缓存读）作为当前 context 大小
-        dist.apiInput = num(lastAssMsg?.tokens?.input) + num(lastAssMsg?.tokens?.cache?.read)
+        // 取最后一条有数据消息的总输入（含缓存读/写）作为当前 context 大小
+        dist.apiInput = num(lastAssMsg?.tokens?.input) + num(lastAssMsg?.tokens?.cache?.read) + num(lastAssMsg?.tokens?.cache?.write)
         dist.apiOutput = num(lastAssMsg?.tokens?.output)
         hasDistData = dist.system + dist.user + dist.agent + dist.toolCall + dist.toolResult > 0 || dist.apiOutput > 0 || dist.apiInput > 0
       } catch {}
@@ -808,6 +732,7 @@ function TokenCachePanel(props: {
         const savedProvider = props.api.kv.get<string>(`${KV_PREFIX}.balance.provider`)
         if (typeof savedProvider === "string" && balanceProviders.some((p) => p.id === savedProvider)) {
           setBalanceProviderId(savedProvider)
+          setBalanceUnsupported(false)
         }
         // Restore auto-switch (default on)
         const savedAuto = props.api.kv.get<boolean>(`${KV_PREFIX}.balance.auto`)
@@ -828,11 +753,6 @@ function TokenCachePanel(props: {
         setSectionBalance(Boolean(props.api.kv.get(`${KV_PREFIX}.section.balance`, true)))
         const bv = props.api.kv.get<boolean>(`${KV_PREFIX}.border`, true)
         setBorderVisible(bv !== false)
-        // Restore language preference
-        const savedLang = props.api.kv.get<string>(`${KV_PREFIX}.lang`)
-        if (savedLang === "zh" || savedLang === "en") {
-          setLangZH(savedLang === "zh")
-        }
         // Restore distribution snapshot so the token distribution block
         // doesn't blank out while api.state.part() re-hydrates.
         const cachedDist = props.api.kv.get<TokenDist>(`${KV_PREFIX}.dist_snapshot`)
@@ -880,8 +800,7 @@ function TokenCachePanel(props: {
     const unsubMsg = props.api.event.on("message.updated", () => { bumpPartVersion(); setRefreshTick(v => v + 1) })
     const unsubSession = props.api.event.on("session.updated", () => { setRefreshTick(v => v + 1) })
     setRefreshTick(v => v + 1)
-    const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
-    onCleanup(() => { clearTimeout(partTimer); clearInterval(balanceTimer); unsubPart(); unsubMsg(); unsubSession() })
+    onCleanup(() => { clearTimeout(partTimer); unsubPart(); unsubMsg(); unsubSession() })
   })
 
   // ── colours ──
@@ -913,12 +832,14 @@ function TokenCachePanel(props: {
 
   const sep = createMemo(() => "\u2500".repeat(Math.max(1, panelWidth() - gutter())))
   function trendLabel(t: number): string {
-    return (t > 0 ? "\u2191" : t < 0 ? "\u2193" : "-") + (t !== 0 ? Math.abs(t).toFixed(1) + "%" : "")
+    // |t| < 0.05 视为无变化：避免显示 "↑0.0%" 的矛盾（箭头存在但数值截断为零）
+    if (Math.abs(t) < 0.05) return "-"
+    return (t > 0 ? "\u2191" : "\u2193") + Math.abs(t).toFixed(1) + "%"
   }
 
   const barW = createMemo(() => {
     const trendSpace = data().hasTrendData ? LABEL_GAP + visualWidth(trendLabel(data().trend)) : 0
-    const overhead = visualWidth(t().hit) + LABEL_GAP + BAR_BRACKETS + BAR_GAP + PCT_FIXED_WIDTH + trendSpace + gutter()
+    const overhead = visualWidth(t("hit")) + LABEL_GAP + BAR_BRACKETS + BAR_GAP + PCT_FIXED_WIDTH + trendSpace + gutter()
     return Math.max(3, panelWidth() - overhead)
   })
   const bar = createMemo(() => progressBar(data().hitRate, barW()))
@@ -964,7 +885,7 @@ function TokenCachePanel(props: {
       <text onMouseUp={() => setOpen((o) => { const n = !o; persistFold("open", n); return n })}>
         <span style={{ fg: pal().muted }}>{open() ? "\u25bc " : "\u25b6 "}</span>
         <span style={{ fg: pal().primary }}>
-            <b>{t().title}</b>
+            <b>{t("title")}</b>
             <Show when={open()}>
               <span style={{ fg: dimColor(pal().muted, 0.75) }}> v{PLUGIN_VERSION}</span>
             </Show>
@@ -972,18 +893,18 @@ function TokenCachePanel(props: {
         <Show when={!open() && data().hasData}>
           <Show when={data().hasTrendData}>
             <span>
-              {" ".repeat(Math.max(1, panelWidth() - gutter() - HEADER_PREFIX - visualWidth(t().title) - visualWidth(pct() + " " + t().hitFolded + " " + trendLabel(data().trend))))}
+              {" ".repeat(Math.max(1, panelWidth() - gutter() - HEADER_PREFIX - visualWidth(t("title")) - visualWidth(pct() + " " + t("hitFolded") + " " + trendLabel(data().trend))))}
             </span>
-            <span style={{ fg: hitColor() }}>{pct()} {t().hitFolded}</span>
-            <span style={{ fg: data().trend !== 0 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
+            <span style={{ fg: hitColor() }}>{pct()} {t("hitFolded")}</span>
+            <span style={{ fg: Math.abs(data().trend) >= 0.05 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
               {" "}{trendLabel(data().trend)}
             </span>
           </Show>
           <Show when={!data().hasTrendData}>
             <span>
-              {" ".repeat(Math.max(1, panelWidth() - gutter() - HEADER_PREFIX - visualWidth(t().title) - visualWidth(pct() + " " + t().hitFolded)))}
+              {" ".repeat(Math.max(1, panelWidth() - gutter() - HEADER_PREFIX - visualWidth(t("title")) - visualWidth(pct() + " " + t("hitFolded"))))}
             </span>
-            <span style={{ fg: hitColor() }}>{pct()} {t().hitFolded}</span>
+            <span style={{ fg: hitColor() }}>{pct()} {t("hitFolded")}</span>
           </Show>
         </Show>
       </text>
@@ -991,7 +912,7 @@ function TokenCachePanel(props: {
       <Show when={open()}>
         <Show when={props.signals.overrideSessionId()}>
           {(() => {
-            const prefix = "  \u21b3 " + (langZH() ? "\u5B50\u4EE3\u7406: " : "Sub: ")
+            const prefix = "  \u21b3 " + t("subPrefix")
             const maxSidW = Math.max(6, panelWidth() - visualWidth(prefix))
             return (
               <text>
@@ -1006,7 +927,7 @@ function TokenCachePanel(props: {
             <text fg={pal().muted}>{sep()}</text>
             <text>
               <span style={{ fg: pal().muted }}>{"> "}</span>
-              <span style={{ fg: pal().muted }}>{t().noData}</span>
+              <span style={{ fg: pal().muted }}>{t("noData")}</span>
             </text>
           </>
         }>
@@ -1014,11 +935,11 @@ function TokenCachePanel(props: {
 
           {/* hit rate + bar — inline to avoid box spacing */}
           <text>
-            <span style={{ fg: pal().text }}>{t().hit} </span>
+            <span style={{ fg: pal().text }}>{t("hit")} </span>
             <span style={{ fg: hitColor() }}>[{bar()}] </span>
             <span style={{ fg: pal().text }}>{pct()}</span>
             <Show when={data().hasTrendData}>
-              <span style={{ fg: data().trend !== 0 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
+              <span style={{ fg: Math.abs(data().trend) >= 0.05 ? (data().trend > 0 ? pal().success : pal().error) : pal().text }}>
                 {" "}{trendLabel(data().trend)}
               </span>
             </Show>
@@ -1026,38 +947,39 @@ function TokenCachePanel(props: {
 
           {/* session cumulative hit rate */}
           <text fg={pal().muted}>
-            {justify(t().totalHit, (Math.floor(data().sessionHitRate * 10) / 10).toFixed(1) + "%")}
+            {justify(t("totalHit"), (Math.floor(data().sessionHitRate * 10) / 10).toFixed(1) + "%")}
           </text>
 
           {/* ── detail section (collapsible, default open) ── */}
           <Show when={sectionDetail()}>
           <text onMouseUp={() => setDetailOpen((o) => { const n = !o; persistFold("detail", n); return n })}>
             <span style={{ fg: pal().muted }}>{detailOpen() ? "\u25bc " : "\u25b6 "}</span>
-            <span style={{ fg: pal().primary }}><b>{t().secDetail}</b></span>
-            <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((detailOpen() ? "\u25bc " : "\u25b6 ") + t().secDetail))}</span>
+            <span style={{ fg: pal().primary }}><b>{t("secDetail")}</b></span>
+            <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((detailOpen() ? "\u25bc " : "\u25b6 ") + t("secDetail")))}</span>
           </text>
 
           <Show when={detailOpen()}>
             <Show when={data().read > 0}>
               <text fg={pal().muted}>
-                {justify(t().read,  fmt(data().read),         t().tok)}
+                {justify(t("read"),  fmt(data().read),         t("tok"))}
               </text>
             </Show>
             <Show when={data().write > 0}>
               <text fg={pal().muted}>
-                {justify(t().write, fmt(data().write),        t().tok)}
+                {justify(t("write"), fmt(data().write),        t("tok"))}
               </text>
             </Show>
+            {/* 未命中 = 新鲜输入 + 缓存写（两者都未从缓存命中） */}
             <text fg={pal().muted}>
-              {justify(t().miss,  fmt(data().freshInput),   t().tok)}
+              {justify(t("miss"),  fmt(data().freshInput + data().write), t("tok"))}
             </text>
             <text fg={pal().muted}>
-              {justify(t().out,   fmt(data().output),       t().tok)}
+              {justify(t("out"),   fmt(data().output),       t("tok"))}
             </text>
             <Show when={data().saved > 0}>
               <text>
-                <span style={{ fg: pal().muted }}>{t().saved}</span>
-                <span>{" ".repeat(Math.max(1, panelWidth() - gutter() - visualWidth(t().saved) - visualWidth("~" + fmtCost(data().saved, currencySymbol(), exchangeRate()))))}</span>
+                <span style={{ fg: pal().muted }}>{t("saved")}</span>
+                <span>{" ".repeat(Math.max(1, panelWidth() - gutter() - visualWidth(t("saved")) - visualWidth("~" + fmtCost(data().saved, currencySymbol(), exchangeRate()))))}</span>
                 <span style={{ fg: pal().success }}>~{fmtCost(data().saved, currencySymbol(), exchangeRate())}</span>
               </text>
             </Show>
@@ -1068,34 +990,34 @@ function TokenCachePanel(props: {
           <Show when={sectionModel()}>
           {<text onMouseUp={() => setModelOpen((o) => { const n = !o; persistFold("model", n); return n })}>
             <span style={{ fg: pal().muted }}>{modelOpen() ? "\u25bc " : "\u25b6 "}</span>
-            <span style={{ fg: pal().primary }}><b>{t().secModel}</b></span>
-            <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((modelOpen() ? "\u25bc " : "\u25b6 ") + t().secModel))}</span>
+            <span style={{ fg: pal().primary }}><b>{t("secModel")}</b></span>
+            <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((modelOpen() ? "\u25bc " : "\u25b6 ") + t("secModel")))}</span>
           </text>}
 
           <Show when={modelOpen()}>
             <text fg={pal().text}>
-              {justify(t().cost,  fmtCost(data().cost, currencySymbol(), exchangeRate()))}
+              {justify(t("cost"),  fmtCost(data().cost, currencySymbol(), exchangeRate()))}
             </text>
             <Show when={data().providerName}>
               <text fg={pal().muted}>
-                {justify(t().provider, data().providerName)}
+                {justify(t("provider"), data().providerName)}
               </text>
             </Show>
             <text fg={pal().muted}>
-              {justify(t().model, data().model)}
+              {justify(t("model"), data().model)}
             </text>
             <Show when={data().hasPricing}>
               <text fg={pal().muted}>
-                {justify(t().rate, currencySymbol() + (data().inputRate * exchangeRate()).toFixed(2) + "/M " + t().inputRate)}
+                {justify(t("rate"), currencySymbol() + (data().inputRate * exchangeRate()).toFixed(2) + "/M " + t("inputRate"))}
               </text>
               <Show when={data().cacheReadRate > 0}>
                 <text fg={pal().muted}>
-                  {justify("", currencySymbol() + (data().cacheReadRate * exchangeRate()).toFixed(2) + "/M " + t().cacheRate)}
+                  {justify("", currencySymbol() + (data().cacheReadRate * exchangeRate()).toFixed(2) + "/M " + t("cacheRate"))}
                 </text>
               </Show>
               <Show when={data().cacheWriteRate > 0}>
                 <text fg={pal().muted}>
-                  {justify("", currencySymbol() + (data().cacheWriteRate * exchangeRate()).toFixed(2) + "/M " + t().writeRate)}
+                  {justify("", currencySymbol() + (data().cacheWriteRate * exchangeRate()).toFixed(2) + "/M " + t("writeRate"))}
                 </text>
             </Show>
           </Show>
@@ -1107,37 +1029,37 @@ function TokenCachePanel(props: {
           <Show when={data().hasDistData}>
             {<text onMouseUp={() => setDistOpen((o) => { const n = !o; persistFold("dist", n); return n })}>
               <span style={{ fg: pal().muted }}>{distOpen() ? "\u25bc " : "\u25b6 "}</span>
-              <span style={{ fg: pal().primary }}><b>{t().distTitle}</b></span>
-              <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((distOpen() ? "\u25bc " : "\u25b6 ") + t().distTitle))}</span>
+              <span style={{ fg: pal().primary }}><b>{t("distTitle")}</b></span>
+              <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((distOpen() ? "\u25bc " : "\u25b6 ") + t("distTitle")))}</span>
             </text>}
             <Show when={distOpen()}>
             <Show when={data().dist.system > 0}>
               <text fg={pal().muted}>
-                {justify(t().distSys, fmt(data().dist.system), t().tok)}
+                {justify(t("distSys"), fmt(data().dist.system), t("tok"))}
               </text>
             </Show>
             <Show when={data().dist.user > 0}>
               <text fg={pal().muted}>
-                {justify(t().distUser, fmt(data().dist.user), t().tok)}
+                {justify(t("distUser"), fmt(data().dist.user), t("tok"))}
               </text>
             </Show>
             <Show when={data().dist.agent > 0}>
               <text fg={pal().muted}>
-                {justify(t().distAgent, fmt(data().dist.agent), t().tok)}
+                {justify(t("distAgent"), fmt(data().dist.agent), t("tok"))}
               </text>
             </Show>
             <Show when={data().dist.toolCall > 0}>
               <text fg={pal().muted}>
-                {justify(t().distTool, fmt(data().dist.toolCall), t().tok)}
+                {justify(t("distTool"), fmt(data().dist.toolCall), t("tok"))}
               </text>
             </Show>
             <Show when={data().dist.toolResult > 0}>
               <text fg={pal().muted}>
-                {justify(t().distRes, fmt(data().dist.toolResult), t().tok)}
+                {justify(t("distRes"), fmt(data().dist.toolResult), t("tok"))}
               </text>
             </Show>
             <text fg={pal().text}>
-              {justify(t().distTotal, fmt(data().dist.apiInput), t().tok)}
+              {justify(t("distTotal"), fmt(data().dist.apiInput), t("tok"))}
             </text>
             </Show>
           </Show>
@@ -1148,18 +1070,18 @@ function TokenCachePanel(props: {
           <Show when={data().hasSkills}>
             {<text onMouseUp={() => setSkillsOpen((o) => { const n = !o; persistFold("skills", n); return n })}>
               <span style={{ fg: pal().muted }}>{skillsOpen() ? "\u25bc " : "\u25b6 "}</span>
-              <span style={{ fg: pal().primary }}><b>{t().secSkills}</b></span>
+              <span style={{ fg: pal().primary }}><b>{t("secSkills")}</b></span>
               <span style={{ fg: pal().muted }}> ({data().skills.length})</span>
-              <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((skillsOpen() ? "\u25bc " : "\u25b6 ") + t().secSkills + ` (${data().skills.length})`))}</span>
+              <span style={{ fg: pal().muted }}>{sep().slice(visualWidth((skillsOpen() ? "\u25bc " : "\u25b6 ") + t("secSkills") + ` (${data().skills.length})`))}</span>
             </text>}
             <Show when={skillsOpen()}>
                 {data().skills.map((sk: { name: string; tokens: number }) => {
-                  const rightW = visualWidth(fmt(sk.tokens)) + UNIT_GAP + visualWidth(t().tok)
+                  const rightW = visualWidth(fmt(sk.tokens)) + UNIT_GAP + visualWidth(t("tok"))
                   const maxLabel = Math.max(4, panelWidth() - gutter() - rightW - 1)
                   const label = truncateVisual(sk.name, maxLabel)
                   return (
                     <text fg={pal().muted}>
-                      {justify(label, fmt(sk.tokens), t().tok)}
+                      {justify(label, fmt(sk.tokens), t("tok"))}
                     </text>
                   )
                 })}
@@ -1167,62 +1089,46 @@ function TokenCachePanel(props: {
           </Show>
           </Show>
 
-          {/* ── DeepSeek balance (single line) ── */}
+          {/* ── provider balance (single line) ── */}
           <Show when={sectionBalance()}>
             <text fg={pal().muted}>{sep()}</text>
-            <Show when={balanceState().status === "idle"}>
+            <Show when={balanceUnsupported()}>
               <text fg={pal().muted}>
                 <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{t().balNoKey.replace("{p}", providerName())}</span>
+                <span>{t("balUnsupported")}</span>
               </text>
             </Show>
-            <Show when={balanceState().status === "loading"}>
-              <text fg={pal().muted}>
-                <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{t().balLoading}</span>
-              </text>
-            </Show>
-            <Show when={balanceState().status === "error"}>
-              <text fg={pal().error}>
-                <span style={{ fg: pal().muted }}>{"> "}</span>
-                <span>{(() => {
-                  const code = balanceState().error
-                  if (code === "401") return t().balErr401
-                  if (code === "403") return t().balErr403
-                  if (code === "EMPTY") return t().balErrEmpty
-                  if (code === "TIMEOUT") return t().balErrTimeout
-                  return t().balError + (code ? ` (${code})` : "")
-                })()}</span>
-              </text>
-            </Show>
-            <Show when={balanceState().status === "ok" && balanceState().data}>
-              {(() => {
-                const list = balanceState().data!
-                const pref = balanceCurrency()
-                // 偏好币种是 DeepSeek 原生返回的（CNY/USD）→ 直接显示
-                const native = pref ? list.find(x => x.currency === pref) : undefined
-                if (native) {
-                  return (
-                    <text fg={pal().text}>
-                      {justify(t().balTotal, balanceSymbol(native.currency) + native.total)}
-                    </text>
-                  )
-                }
-                // 非原生币种（EUR/JPY/GBP/KRW…）→ 取第一条余额按汇率换算
-                const base = list[0]
-                const baseAmt = parseFloat(base.total)
-                const converted = Number.isFinite(baseAmt)
-                  ? convertBalance(pref || base.currency, exchangeRate(), baseAmt, base.currency)
-                  : baseAmt
-                const shown = pref && base.currency !== pref
-                  ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
-                  : base.total
-                return (
-                  <text fg={pal().text}>
-                    {justify(t().balTotal, balanceSymbol(pref || base.currency) + shown)}
-                  </text>
-                )
-              })()}
+            <Show when={!balanceUnsupported()}>
+              <Show when={balanceState().status === "idle"}>
+                <text fg={pal().muted}>
+                  <span style={{ fg: pal().muted }}>{"> "}</span>
+                  <span>{t("balNoKey", { p: providerName() })}</span>
+                </text>
+              </Show>
+              <Show when={balanceState().status === "loading"}>
+                <text fg={pal().muted}>
+                  <span style={{ fg: pal().muted }}>{"> "}</span>
+                  <span>{t("balLoading")}</span>
+                </text>
+              </Show>
+              <Show when={balanceState().status === "error"}>
+                <text fg={pal().error}>
+                  <span style={{ fg: pal().muted }}>{"> "}</span>
+                  <span>{(() => {
+                    const code = balanceState().error
+                    if (code === "401") return t("balErr401")
+                    if (code === "403") return t("balErr403")
+                    if (code === "EMPTY") return t("balErrEmpty")
+                    if (code === "TIMEOUT") return t("balErrTimeout")
+                    return t("balError") + (code ? ` (${code})` : "")
+                  })()}</span>
+                </text>
+              </Show>
+              <Show when={balanceState().status === "ok" && balanceState().data}>
+                <text fg={pal().text}>
+                  {justify(t("balTotal"), formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
+                </text>
+              </Show>
             </Show>
           </Show>
         </Show>
@@ -1234,6 +1140,166 @@ function TokenCachePanel(props: {
 // ---------------------------------------------------------------------------
 // Plugin entry
 // ---------------------------------------------------------------------------
+
+/**
+ * 输入框 hint 行（session_prompt slot 的 hint）：单行显示 路径 · 命中率 · 余额 · Tokens。
+ * 通过 ui.Prompt 的 hint prop 注入——宿主右侧的 token/commands 提示自动保留，
+ * 三合一信息与路径同行显示在中间位置。
+ */
+function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sessionId: string }): JSX.Element {
+  const KV_PREFIX = "cache_panel"
+  const t = createT(() => props.signals.langCode())
+
+  const sid = props.sessionId
+
+  // ── 命中率（单条口径：最后一条有 token 的 assistant 消息）+ token 汇总 ──
+  const stats = createMemo(() => {
+    const id = sid
+    if (!id) return null
+    const msgs = props.api.state.session.messages(id) as Message[]
+    const session = typeof props.api.state.session.get === "function"
+      ? props.api.state.session.get(id)
+      : undefined
+    let input = session?.tokens?.input ?? 0
+    let read = session?.tokens?.cache?.read ?? 0
+    let write = session?.tokens?.cache?.write ?? 0
+    // 旧 SDK 无 session 聚合字段 → 遍历消息累加（与侧边栏 fallback 一致）
+    if (session?.tokens == null) {
+      for (const m of msgs) {
+        if (m.role !== "assistant") continue
+        const tk = (m as AssistantMessage).tokens
+        if (!tk) continue
+        input += num(tk.input)
+        read += num(tk.cache?.read)
+        write += num(tk.cache?.write)
+      }
+    }
+    // 从后往前取最后两条有 token 数据的 assistant 消息 → 单条命中率 + 趋势
+    // 分母含缓存写（业界口径：read / (input+read+write)）
+    let hitRate = -1, prevHitRate = -1
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role !== "assistant") continue
+      const tk = (m as AssistantMessage).tokens
+      if (!tk) continue
+      const mit = num(tk.input) + num(tk.cache?.read) + num(tk.cache?.write)
+      const mrt = num(tk.cache?.read)
+      if (mit <= 0) continue
+      const rate = (mrt / mit) * 100
+      if (hitRate < 0) { hitRate = rate; continue }
+      prevHitRate = rate
+      break
+    }
+    return { hitRate, prevHitRate, input, read, write }
+  })
+
+  // 余额查询状态为共享信号（PanelSignals.balanceState），由 tui() 统一轮询
+
+  // 自动切换 provider（跟随当前会话模型；幂等，与侧边栏共享信号）
+  createEffect(() => {
+    if (!props.signals.autoBalance()) return
+    const id = sid
+    if (!id) return
+    const msgs = props.api.state.session.messages(id) as Message[]
+    let pid = ""
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role === "assistant" && (m as AssistantMessage).providerID) { pid = (m as AssistantMessage).providerID; break }
+    }
+    if (!pid) {
+      try { pid = props.api.state.session.get(id)?.model?.providerID ?? "" } catch {}
+    }
+    if (!pid) return
+    const hit = matchBalanceProvider(pid)
+    if (hit) {
+      props.signals.setBalanceUnsupported(false)
+      if (hit.id !== props.signals.balanceProviderId()) {
+        props.signals.setBalanceProviderId(hit.id)
+        props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+      }
+    } else {
+      // 当前提供商没有余额适配器 → 标记不支持，余额显示 N/A 并停止轮询
+      props.signals.setBalanceUnsupported(true)
+    }
+  })
+
+  // ── 主题色（与侧边栏同口径）──
+  const pal = createMemo(() => {
+    const th = props.api.theme.current as Record<string, unknown>
+    const sat = (k: string, fb: string) => desaturateTo(th[k], MAX_SAT, fb)
+    return {
+      text:    sat("text",      FALLBACK.text),
+      muted:   sat("textMuted", FALLBACK.muted),
+      success: sat("success",   FALLBACK.success),
+      warning: sat("warning",   FALLBACK.warning),
+      error:   sat("error",     FALLBACK.error),
+    }
+  })
+
+  const hitColor = createMemo(() => {
+    const r = stats()?.hitRate ?? -1
+    if (r >= 85) return pal().success
+    if (r >= 70) return pal().warning
+    return pal().error
+  })
+
+  // 命中率趋势：最后一条与上一条的差值；|Δ| < 0.05 视为无变化（null = 不显示）
+  const trend = createMemo(() => {
+    const s = stats()
+    if (!s || s.prevHitRate < 0 || s.hitRate < 0) return null
+    const d = s.hitRate - s.prevHitRate
+    return Math.abs(d) < 0.05 ? null : d
+  })
+
+  const balanceText = createMemo(() => {
+    const s = props.signals.balanceState()
+    if (s.status === "ok" && s.data) return formatBalanceText(s.data, props.signals.balanceCurrency(), props.signals.exchangeRate())
+    if (s.status === "loading") return "\u2026"
+    if (s.status === "error") return "\u26a0"
+    return "-"
+  })
+
+  // 路径显示（替换宿主默认 hint 左侧的 cwd 文本）
+  const directory = createMemo(() => {
+    try { return props.api.state.path.directory } catch { return "" }
+  })
+
+  // 恢复显隐偏好（默认显示）；关闭时回退为仅显示路径，与宿主默认 hint 行一致
+  onMount(() => {
+    try {
+      const v = props.api.kv.get<boolean>(`${KV_PREFIX}.section.bottom`, true)
+      props.signals.setSectionBottom(v !== false)
+    } catch {}
+  })
+
+  return (
+    <Show when={props.signals.sectionBottom()} fallback={<text fg={pal().muted}>{directory()}</text>}>
+      <box marginLeft={1} flexGrow={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
+        <text fg={pal().muted}>{directory()}</text>
+      <box flexDirection="row">
+        <text>
+          <span style={{ fg: pal().muted }}>{t("barHit")} </span>
+          <span style={{ fg: hitColor() }}>{(stats()?.hitRate ?? -1) >= 0 ? (Math.floor(stats()!.hitRate * 10) / 10).toFixed(1) + "%" : "--"}</span>
+          <Show when={trend() !== null}>
+            <span style={{ fg: trend()! > 0 ? pal().success : pal().error }}>
+              {" " + (trend()! > 0 ? "\u2191" : "\u2193") + Math.abs(trend()!).toFixed(1) + "%"}
+            </span>
+          </Show>
+          <span style={{ fg: pal().muted }}>{" \u00b7 " + t("barTok") + " "}</span>
+          <span style={{ fg: pal().text }}>
+            {stats() ? fmtCompact(stats()!.input + stats()!.read + stats()!.write) : "--"}
+          </span>
+          <Show when={!props.signals.balanceUnsupported()}>
+            <span style={{ fg: pal().muted }}>{" \u00b7 " + t("barBal") + " "}</span>
+            <span style={{ fg: pal().text }}>{balanceText()}</span>
+          </Show>
+        </text>
+        <text fg={pal().muted}>{" \u00b7 "}</text>
+        </box>
+      </box>
+    </Show>
+  )
+}
 
 function createSidebarSlot(api: TuiPluginApi, signals: PanelSignals): TuiSlotPlugin {
   let lastSlotSid = ""
@@ -1271,26 +1337,39 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [sectionDist, setSectionDist] = createSignal(true)
   const [sectionSkills, setSectionSkills] = createSignal(true)
   const [sectionBalance, setSectionBalance] = createSignal(true)
+  const [sectionBottom, setSectionBottom] = createSignal(true)
   const [balanceRefresh, setBalanceRefresh] = createSignal(0)
   const [balanceProviderId, setBalanceProviderId] = createSignal("deepseek")
   const [autoBalance, setAutoBalance] = createSignal(true)
+  const [balanceUnsupported, setBalanceUnsupported] = createSignal(false)
   const [balanceCurrency, setBalanceCurrency] = createSignal("")
   const [borderVisible, setBorderVisible] = createSignal(true)
-  const [langZH, setLangZH] = createSignal(LANG_ZH)
+  const [langCode, setLangCode] = createSignal<LangCode>(INIT_LANG)
   const [overrideSessionId, setOverrideSessionId] = createSignal<string | undefined>(undefined)
+
+  // ── 余额查询状态（共享）：侧边栏与底部栏读同一份数据，
+  //    避免重复请求导致两处余额不一致 ──
+  const [balanceState, setBalanceState] = createSignal<BalanceState>({
+    status: "idle", data: null, lastFetch: 0,
+  })
+  // 请求序号：防止定时轮询与手动刷新并发时，慢的旧请求覆盖新结果
+  let balanceSeq = 0
 
   const signals: PanelSignals = {
     currencySymbol, setCurrencySymbol,
     exchangeRate, setExchangeRate,
-    langZH, setLangZH,
+    langCode, setLangCode,
     sectionDetail, setSectionDetail,
     sectionModel, setSectionModel,
     sectionDist, setSectionDist,
     sectionSkills, setSectionSkills,
     sectionBalance, setSectionBalance,
+    sectionBottom, setSectionBottom,
     balanceRefresh, setBalanceRefresh,
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
+    balanceUnsupported, setBalanceUnsupported,
+    balanceState,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
     overrideSessionId, setOverrideSessionId,
@@ -1298,31 +1377,120 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   api.slots.register(createSidebarSlot(api, signals))
 
+  // 输入框 hint 行（session_prompt slot，replace 模式）：
+  // 用宿主同一 Prompt 组件重渲染输入框，仅替换 hint 行左侧——
+  // 在路径与右侧 token/commands 提示之间插入 命中率 · 余额 · Tokens。
+  api.slots.register({
+    order: 55,
+    slots: {
+      session_prompt(
+        _ctx: TuiSlotContext,
+        input: {
+          session_id: string
+          visible?: boolean
+          disabled?: boolean
+          on_submit?: () => void
+          ref?: (ref: TuiPromptRef | undefined) => void
+        },
+      ): JSX.Element {
+        return (
+          <api.ui.Prompt
+            sessionID={input.session_id}
+            visible={input.visible}
+            disabled={input.disabled}
+            onSubmit={input.on_submit}
+            ref={input.ref}
+            hint={<BottomStatusBar api={api} signals={signals} sessionId={input.session_id} />}
+          />
+        )
+      },
+    },
+  })
+
   // ── slash commands for runtime config ──
   const KV_PREFIX = "cache_panel"
 
+  // ── 语言偏好恢复：KV 就绪后优先用户设置（/cache-lang），覆盖自动识别 ──
+  const restoreLang = () => {
+    try {
+      const saved = api.kv.get<string>(`${KV_PREFIX}.lang`)
+      if (saved && LANG_META.some((m) => m.code === saved)) setLangCode(saved as LangCode)
+    } catch {}
+  }
+  if (api.kv.ready) {
+    restoreLang()
+  } else {
+    const langTimer = setInterval(() => {
+      if (api.kv.ready) { clearInterval(langTimer); restoreLang() }
+    }, 10)
+    api.lifecycle.onDispose(() => clearInterval(langTimer))
+  }
+
+  const pollBalance = async () => {
+    const provider = getBalanceProvider(balanceProviderId())
+    // 手动配置的 key 优先；缺失时自动复用 OpenCode 已认证的 key（auth.json / config）
+    const key = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+      || findOpencodeKey(api, provider)
+    if (balanceUnsupported()) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
+    if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
+    const now = Date.now()
+    const prev = balanceState()
+    // key 已更换（重新输入）→ 强制重新查询，绕过缓存
+    if (prev.status === "ok" && prev.key === key && now - prev.lastFetch < BALANCE_POLL_MS) return // cache still fresh
+    const seq = ++balanceSeq
+    setBalanceState({ ...prev, status: "loading", error: undefined, key })
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
+    try {
+      const data = await provider.fetchBalance(key, controller.signal)
+      clearTimeout(timer)
+      if (seq !== balanceSeq) return // 已被更新的请求取代，丢弃过期结果
+      setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
+    } catch (err) {
+      clearTimeout(timer)
+      if (seq !== balanceSeq) return
+      const code = timedOut ? "TIMEOUT" : (err instanceof Error ? err.message : "")
+      // 失败时清空旧数据，避免显示过期余额
+      setBalanceState({ status: "error", data: null, lastFetch: 0, error: code, key })
+    }
+  }
+
+  // Re-fetch when the API key is (re)configured via /cache-balance-key.
+  // 注意：pollBalance 内部读写 balanceState 信号，若不做 untrack 包裹，
+  // effect 会追踪 balanceState 的变化并与 pollBalance 的 setBalanceState
+  // 形成无限循环（每次重跑都发起新的 fetch 请求）。
+  createEffect(() => {
+    void balanceRefresh()
+    untrack(() => { void pollBalance() })
+  })
+
+  // 定时轮询（5 分钟）；随插件生命周期清理
+  const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
+  api.lifecycle.onDispose(() => clearInterval(balanceTimer))
+
   /** 菜单中 provider 选项标题：标注 key 来源（手动配置 / OpenCode 自动复用 / 未配置）。 */
   const providerOptionTitle = (p: BalanceProvider, current?: string) => {
-    const zh = langZH()
+    const t = createT(() => langCode())
     const hasManual = !!api.kv.get<string>(`${KV_PREFIX}.balance.${p.id}.key`, "")
     const hasAuto = !hasManual && !!findOpencodeKey(api, p)
     const mark = hasManual
-      ? (zh ? "（用户 key）" : " (user key)")
+      ? t("keyUser")
       : hasAuto
-        ? (zh ? "（OpenCode）" : " (OpenCode)")
-        : (zh ? "（未配置）" : " (not set)")
+        ? t("keyOpenCode")
+        : t("keyNotSet")
     return p.name + mark + (current && p.id === current ? " *" : "")
   }
 
   /** 弹出指定 provider 的 API Key 输入框（脱敏预填；空清除 / 含 * 保留原 key / 新 key 实时刷新）。 */
   const promptBalanceKey = (dialog: TuiDialogStack | undefined, provider: BalanceProvider) => {
-    const zh = langZH()
+    const t = createT(() => langCode())
     const current = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
     const masked = maskKey(current)
     dialog?.replace(() => (
       <api.ui.DialogPrompt
         title={provider.name}
-        description={() => <text>{zh ? `输入 ${provider.name} API Key 以显示账户余额（留空清除）` : `Enter your ${provider.name} API key to show account balance (leave empty to clear)`}</text>}
+        description={() => <text>{t("balKeyPrompt", { p: provider.name })}</text>}
         placeholder={provider.keyPlaceholder ?? "sk-..."}
         value={masked}
         onConfirm={(val) => {
@@ -1338,9 +1506,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
           api.kv.set(`${KV_PREFIX}.balance.${provider.id}.key`, key)
           setBalanceRefresh(v => v + 1)
           if (key) {
-            api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
+            api.ui.toast({ message: t("keySaved") })
           } else {
-            api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
+            api.ui.toast({ message: t("keyCleared") })
           }
           dialog?.clear()
         }}
@@ -1364,6 +1532,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               value: code,
             }))}
             onSelect={(opt) => {
+              const t = createT(() => langCode())
               const sym = CURRENCIES[opt.value] ?? "$"
               const defRate = DEFAULT_RATES[opt.value] ?? 1
               api.kv.set(`${KV_PREFIX}.currency`, sym)
@@ -1373,7 +1542,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               signals.setBalanceCurrency(opt.value)
               signals.setCurrencySymbol(sym)
               signals.setExchangeRate(defRate)
-              api.ui.toast({ message: `Currency: ${opt.value} (${sym}), rate: ${defRate}` })
+              api.ui.toast({ message: t("currencySet", { v: opt.value, s: sym, r: defRate }) })
               dialog?.clear()
             }}
           />
@@ -1393,11 +1562,12 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
             placeholder="1.0"
             value={String(api.kv.get<number>(`${KV_PREFIX}.rate`, 1))}
             onConfirm={(val) => {
+              const t = createT(() => langCode())
               const n = parseFloat(val)
               if (n > 0) {
                 api.kv.set(`${KV_PREFIX}.rate`, n)
                 signals.setExchangeRate(n)
-                api.ui.toast({ message: `Exchange rate set to ${n}` })
+                api.ui.toast({ message: t("rateSet", { r: n }) })
               }
               dialog?.clear()
             }}
@@ -1411,29 +1581,42 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Show or hide a sidebar section",
       slash: { name: "cache-section" },
       onSelect: (dialog) => {
+        const t = createT(() => langCode())
         const detailOn = Boolean(api.kv.get(`${KV_PREFIX}.section.detail`, true))
         const modelOn  = Boolean(api.kv.get(`${KV_PREFIX}.section.model`, true))
         const distOn   = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
         const skillsOn = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
         const balanceOn = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
+        const bottomOn = Boolean(api.kv.get(`${KV_PREFIX}.section.bottom`, true))
         const borderOn = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
+        const labels: Record<string, string> = {
+          detail:  t("secDetail"),
+          model:   t("secModel"),
+          dist:    t("distTitle"),
+          skills:  t("secSkills"),
+          balance: t("secBalance"),
+          bottom:  t("secBottom"),
+          border:  t("secBorder"),
+        }
+        const optTitle = (label: string, on: boolean) => `${visualPadEnd(label, 15)}[${on ? "ON" : "OFF"}]`
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title="Toggle Section"
+            title={t("secToggle")}
             options={[
-              { title: `Token Detail    [${detailOn ? "ON" : "OFF"}]`,  value: "detail" },
-              { title: `Model & Pricing [${modelOn  ? "ON" : "OFF"}]`,  value: "model" },
-              { title: `Token Dist.     [${distOn   ? "ON" : "OFF"}]`,  value: "dist" },
-              { title: `Loaded Skills   [${skillsOn ? "ON" : "OFF"}]`,  value: "skills" },
-              { title: `Balance         [${balanceOn ? "ON" : "OFF"}]`, value: "balance" },
-              { title: `Panel Border    [${borderOn ? "ON" : "OFF"}]`,  value: "border" },
+              { title: optTitle(labels.detail, detailOn),   value: "detail" },
+              { title: optTitle(labels.model, modelOn),     value: "model" },
+              { title: optTitle(labels.dist, distOn),       value: "dist" },
+              { title: optTitle(labels.skills, skillsOn),   value: "skills" },
+              { title: optTitle(labels.balance, balanceOn), value: "balance" },
+              { title: optTitle(labels.bottom, bottomOn),   value: "bottom" },
+              { title: optTitle(labels.border, borderOn),   value: "border" },
             ]}
             onSelect={(opt) => {
               if (opt.value === "border") {
                 const cur = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
                 api.kv.set(`${KV_PREFIX}.border`, !cur)
                 signals.setBorderVisible(!cur)
-                api.ui.toast({ message: `Panel border ${!cur ? "shown" : "hidden"}` })
+                api.ui.toast({ message: !cur ? t("borderShown") : t("borderHidden") })
               } else {
                 const key = `${KV_PREFIX}.section.${opt.value}`
                 const cur = Boolean(api.kv.get(key, true))
@@ -1443,7 +1626,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 if (opt.value === "dist")   signals.setSectionDist(!cur)
                 if (opt.value === "skills") signals.setSectionSkills(!cur)
                 if (opt.value === "balance") signals.setSectionBalance(!cur)
-                api.ui.toast({ message: `${opt.value} section ${!cur ? "shown" : "hidden"}` })
+                if (opt.value === "bottom")  signals.setSectionBottom(!cur)
+                const name = labels[opt.value] ?? opt.value
+                api.ui.toast({ message: t(!cur ? "sectionShown" : "sectionHidden", { s: name }) })
               }
               dialog?.clear()
             }}
@@ -1457,6 +1642,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Display the current plugin configuration",
       slash: { name: "cache-config" },
       onSelect: (dialog) => {
+        const t = createT(() => langCode())
         const sym = api.kv.get<string>(`${KV_PREFIX}.currency`) ?? "$"
         const rate = api.kv.get<number>(`${KV_PREFIX}.rate`) ?? 1
         const detail = Boolean(api.kv.get(`${KV_PREFIX}.section.detail`, true))
@@ -1464,9 +1650,16 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         const dist = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
         const skills = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
         const balance = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
+        const bottom = Boolean(api.kv.get(`${KV_PREFIX}.section.bottom`, true))
+        const on = (v: boolean) => v ? "ON" : "OFF"
         api.ui.toast({
-          title: "Cache Panel Config",
-          message: `Currency: ${sym}  |  Rate: ${rate}  |  Detail: ${detail ? "ON" : "OFF"}  |  Model: ${model ? "ON" : "OFF"}  |  Dist: ${dist ? "ON" : "OFF"}  |  Skills: ${skills ? "ON" : "OFF"}  |  Balance: ${balance ? "ON" : "OFF"}`,
+          title: t("panelConfigTitle"),
+          message: t("panelConfigMsg", {
+            c: sym, r: rate,
+            d: on(detail), m: on(model),
+            t: on(dist), k: on(skills),
+            b: on(balance), f: on(bottom),
+          }),
           duration: 8000,
         })
         dialog?.clear()
@@ -1478,19 +1671,20 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Switch between Chinese and English display",
       slash: { name: "cache-lang" },
       onSelect: (dialog) => {
-        const cur = langZH()
+        const t = createT(() => langCode())
+        const cur = langCode()
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title="Display Language"
-            options={[
-              { title: `中文    ${cur ? "\u2713" : ""}`, value: "zh" },
-              { title: `English ${cur ? "" : "\u2713"}`, value: "en" },
-            ]}
+            title={t("langTitle")}
+            options={LANG_META.map((m) => ({
+              title: `${visualPadEnd(m.label, 9)}${cur === m.code ? "\u2713" : ""}`,
+              value: m.code,
+            }))}
             onSelect={(opt) => {
-              const zh = opt.value === "zh"
-              api.kv.set(`${KV_PREFIX}.lang`, opt.value)
-              setLangZH(zh)
-              api.ui.toast({ message: zh ? "语言已切换为中文" : "Switched to English" })
+              const code = opt.value as LangCode
+              api.kv.set(`${KV_PREFIX}.lang`, code)
+              setLangCode(code)
+              api.ui.toast({ message: t("langSwitched") })
               dialog?.clear()
             }}
           />
@@ -1503,15 +1697,13 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "切换余额提供商 / 自动切换当前会话提供商 | Switch balance provider / auto-switch session provider",
       slash: { name: "cache-balance" },
       onSelect: (dialog) => {
-        const zh = langZH()
+        const t = createT(() => langCode())
         const current = signals.balanceProviderId()
         const auto = signals.autoBalance()
-        const autoLabel = auto
-          ? (zh ? "自动切换提供商 [开]" : "Auto-switch provider [ON]")
-          : (zh ? "自动切换提供商 [关]" : "Auto-switch provider [OFF]")
+        const autoLabel = `${t("autoSwitchOpt")} [${auto ? "ON" : "OFF"}]`
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title={zh ? "余额提供商 / 自动切换" : "Balance Provider / Auto-switch"}
+            title={t("balProvTitle")}
             options={[
               {
                 title: autoLabel,
@@ -1527,7 +1719,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 const next = !auto
                 api.kv.set(`${KV_PREFIX}.balance.auto`, next)
                 signals.setAutoBalance(next)
-                api.ui.toast({ message: zh ? `自动切换余额提供商: ${next ? "开" : "关"}` : `Auto-switch balance provider: ${next ? "ON" : "OFF"}` })
+                api.ui.toast({ message: next ? t("autoSwitchOn") : t("autoSwitchOff") })
                 dialog?.clear()
               } else {
                 const provider = getBalanceProvider(opt.value)
@@ -1536,6 +1728,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 api.kv.set(`${KV_PREFIX}.balance.auto`, false)
                 signals.setBalanceProviderId(provider.id)
                 signals.setAutoBalance(false)
+                signals.setBalanceUnsupported(false)
                 // 切换后立即按新 provider 刷新显示（无 key 时显示 idle，避免残留上一 provider 余额）
                 signals.setBalanceRefresh(signals.balanceRefresh() + 1)
                 const hasKey = !!api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
@@ -1543,7 +1736,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                   // 未配置 key → 进入设置流程（对话框保持打开等待输入）
                   promptBalanceKey(dialog, provider)
                 } else {
-                  api.ui.toast({ message: zh ? `余额提供商: ${provider.name}（自动切换已关闭）` : `Balance provider: ${provider.name} (auto-switch off)` })
+                  api.ui.toast({ message: t("providerManual", { p: provider.name }) })
                   dialog?.clear()
                 }
               }
@@ -1558,11 +1751,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Select a provider and set its API key for balance display",
       slash: { name: "cache-balance-key" },
       onSelect: (dialog) => {
-        const zh = langZH()
+        const t = createT(() => langCode())
         // 步骤 1：选择 provider
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title={zh ? "选择余额提供商" : "Select Balance Provider"}
+            title={t("balSelectTitle")}
             options={balanceProviders.map((p) => ({
               title: providerOptionTitle(p),
               value: p.id,
@@ -1589,9 +1782,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Dump all tool parts found in the current session for skill detection debugging",
       slash: { name: "cache-debug-skills" },
       onSelect: () => {
+        const t = createT(() => langCode())
         const rt = api.route.current
         if (rt.name !== "session" || !rt.params) {
-          api.ui.toast({ message: "Please run this command inside a session", variant: "warning" })
+          api.ui.toast({ message: t("runInSession"), variant: "warning" })
           return
         }
         const sid = String(rt.params.sessionID)
@@ -1669,7 +1863,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
         if (unique.length > 0) {
           // ── 有子代理 → DialogSelect 列表选择 ──
-          const zh = langZH()
+          const t = createT(() => langCode())
           const currentSid = signals.overrideSessionId() ?? api.kv.get<string>(`${KV_PREFIX}.session`, "")
           const options = unique.map((c, i) => ({
             title: `${i + 1}. ${c.title}`,
@@ -1678,24 +1872,24 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
           }))
           // 首尾各放一个"回到主会话"，长列表时顶部底部均可直达
           const backValue = "__main__"
-          const backTitle = `\u2500 ${zh ? "\u56DE\u5230\u4E3B\u4F1A\u8BDD" : "Back to Main"}`
+          const backTitle = `\u2500 ${t("backToMainTitle")}`
           options.unshift({ title: backTitle, value: backValue, description: "" })
           options.push({ title: backTitle, value: backValue, description: "" })
           const currentIdx = currentSid ? options.findIndex(o => o.value === currentSid) : -1
           dialog?.replace(() => (
             <api.ui.DialogSelect
-              title={zh ? "选择子代理" : "Select Sub-Agent"}
+              title={t("subSelectTitle")}
               options={options}
               current={currentIdx >= 0 ? options[currentIdx].value : undefined}
               onSelect={(opt) => {
                 if (opt.value === backValue) {
                   signals.setOverrideSessionId(undefined)
                   api.kv.set(`${KV_PREFIX}.session`, "")
-                  api.ui.toast({ message: zh ? "已切回主会话" : "Switched to main session" })
+                  api.ui.toast({ message: t("backToMain") })
                 } else {
                   signals.setOverrideSessionId(opt.value)
                   api.kv.set(`${KV_PREFIX}.session`, opt.value)
-                  api.ui.toast({ message: (zh ? "已切换至子代理: " : "Showing sub-agent: ") + opt.value.slice(0, 24) + "\u2026" })
+                  api.ui.toast({ message: t("subAgentSwitched", { s: opt.value.slice(0, 24) + "\u2026" }) })
                 }
                 dialog?.clear()
               }}
@@ -1703,11 +1897,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
           ))
         } else {
           // ── 无子代理 → DialogPrompt 手动粘贴 ──
-          const zh = langZH()
+          const t = createT(() => langCode())
           dialog?.replace(() => (
             <api.ui.DialogPrompt
-              title={signals.overrideSessionId() ? zh ? "切换子代理" : "Switch Sub" : zh ? "查看子代理缓存" : "View Sub Cache"}
-              description={() => <text>{zh ? "未找到子代理，请手动粘贴 Session ID" : "No sub-agents found. Paste a Session ID manually"}</text>}
+              title={signals.overrideSessionId() ? t("subSwitchTitle") : t("subViewTitle")}
+              description={() => <text>{t("subNoFound")}</text>}
               placeholder="ses_..."
               value={signals.overrideSessionId() ?? api.kv.get<string>(`${KV_PREFIX}.session`, "") ?? ""}
               onConfirm={(val) => {
@@ -1715,7 +1909,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 if (sid) {
                   signals.setOverrideSessionId(sid)
                   api.kv.set(`${KV_PREFIX}.session`, sid)
-                  api.ui.toast({ message: (langZH() ? "已切换至子代理: " : "Showing sub-agent: ") + sid.slice(0, 24) + "\u2026" })
+                  api.ui.toast({ message: t("subAgentSwitched", { s: sid.slice(0, 24) + "\u2026" }) })
                 }
                 dialog?.clear()
               }}
@@ -1731,9 +1925,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Return to main session stats",
       slash: { name: "cache-session-back" },
       onSelect: (dialog) => {
+        const t = createT(() => langCode())
         signals.setOverrideSessionId(undefined)
         api.kv.set(`${KV_PREFIX}.session`, "")
-        api.ui.toast({ message: langZH() ? "已切回主会话" : "Switched to main session" })
+        api.ui.toast({ message: t("backToMain") })
         dialog?.clear()
       },
     },
