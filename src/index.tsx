@@ -76,10 +76,13 @@ function truncateVisual(s: string, maxCols: number): string {
 }
 
 // ── language ──────────────────────────────────────────────────────
-// 语言初始化：环境变量 CACHE_TUI_LANG 覆盖 → 否则按系统 locale 自动检测
+// 语言初始化：环境变量 CACHE_TUI_LANG 覆盖 → 否则按系统 locale 自动检测。
+// 用户通过 /cache-lang 设置的偏好会在 KV 就绪后优先覆盖（见 tui() 内恢复逻辑）。
 
 const DEBUG_LANG = typeof process !== "undefined" ? process.env?.CACHE_TUI_LANG : undefined
-const INIT_LANG: LangCode = DEBUG_LANG === "zh" || DEBUG_LANG === "en" ? DEBUG_LANG : detectLang()
+const INIT_LANG: LangCode = DEBUG_LANG !== undefined && LANG_META.some((m) => m.code === DEBUG_LANG)
+  ? (DEBUG_LANG as LangCode)
+  : detectLang()
 
 // ── color helpers ────────────────────────────────────────────────
 
@@ -440,7 +443,7 @@ function TokenCachePanel(props: {
   const {
     currencySymbol, setCurrencySymbol,
     exchangeRate, setExchangeRate,
-    langCode, setLangCode,
+    langCode,
     sectionDetail, setSectionDetail,
     sectionModel, setSectionModel,
     sectionDist, setSectionDist,
@@ -750,11 +753,6 @@ function TokenCachePanel(props: {
         setSectionBalance(Boolean(props.api.kv.get(`${KV_PREFIX}.section.balance`, true)))
         const bv = props.api.kv.get<boolean>(`${KV_PREFIX}.border`, true)
         setBorderVisible(bv !== false)
-        // Restore language preference
-        const savedLang = props.api.kv.get<string>(`${KV_PREFIX}.lang`)
-        if (savedLang === "zh" || savedLang === "en") {
-          setLangCode(savedLang)
-        }
         // Restore distribution snapshot so the token distribution block
         // doesn't blank out while api.state.part() re-hydrates.
         const cachedDist = props.api.kv.get<TokenDist>(`${KV_PREFIX}.dist_snapshot`)
@@ -1411,6 +1409,22 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   // ── slash commands for runtime config ──
   const KV_PREFIX = "cache_panel"
+
+  // ── 语言偏好恢复：KV 就绪后优先用户设置（/cache-lang），覆盖自动识别 ──
+  const restoreLang = () => {
+    try {
+      const saved = api.kv.get<string>(`${KV_PREFIX}.lang`)
+      if (saved && LANG_META.some((m) => m.code === saved)) setLangCode(saved as LangCode)
+    } catch {}
+  }
+  if (api.kv.ready) {
+    restoreLang()
+  } else {
+    const langTimer = setInterval(() => {
+      if (api.kv.ready) { clearInterval(langTimer); restoreLang() }
+    }, 10)
+    api.lifecycle.onDispose(() => clearInterval(langTimer))
+  }
 
   const pollBalance = async () => {
     const provider = getBalanceProvider(balanceProviderId())
