@@ -128,6 +128,29 @@ const ZH_T = {
   barHit:     "命中率",
   barBal:     "余额",
   barTok:     "Tokens",
+  // ── /cache-section 面板 ──
+  secToggle:  "切换区块",
+  secBalance: "余额",
+  secBottom:  "底部状态栏",
+  secBorder:  "面板边框",
+  // ── toast ──
+  keySaved:   "API Key 已保存，正在查询余额...",
+  keyCleared: "API Key 已清除",
+  currencySet: "币种: {v} ({s}), 汇率: {r}",
+  rateSet:    "汇率已设为 {r}",
+  panelConfigTitle: "缓存面板配置",
+  panelConfigMsg: "币种: {c} | 汇率: {r} | 明细: {d} | 模型: {m} | 分布: {t} | 技能: {k} | 余额: {b} | 底部: {f}",
+  borderShown: "面板边框 已显示",
+  borderHidden: "面板边框 已隐藏",
+  sectionShown: "{s} 已显示",
+  sectionHidden: "{s} 已隐藏",
+  langSwitched: "语言已切换为中文",
+  autoSwitchOn: "自动切换余额提供商: 开",
+  autoSwitchOff: "自动切换余额提供商: 关",
+  providerManual: "余额提供商: {p}（自动切换已关闭）",
+  runInSession: "请在会话内运行此命令",
+  backToMain: "已切回主会话",
+  subAgentSwitched: "已切换至子代理: {s}",
 } as const
 
 const EN_T = {
@@ -172,6 +195,29 @@ const EN_T = {
   barHit:     "Hit",
   barBal:     "Balance",
   barTok:     "Tokens",
+  // ── /cache-section panel ──
+  secToggle:  "Toggle Section",
+  secBalance: "Balance",
+  secBottom:  "Bottom Bar",
+  secBorder:  "Panel Border",
+  // ── toasts ──
+  keySaved:   "API Key saved, fetching balance...",
+  keyCleared: "API Key cleared",
+  currencySet: "Currency: {v} ({s}), rate: {r}",
+  rateSet:    "Exchange rate set to {r}",
+  panelConfigTitle: "Cache Panel Config",
+  panelConfigMsg: "Currency: {c} | Rate: {r} | Detail: {d} | Model: {m} | Dist: {t} | Skills: {k} | Balance: {b} | Bottom: {f}",
+  borderShown: "Panel border shown",
+  borderHidden: "Panel border hidden",
+  sectionShown: "{s} section shown",
+  sectionHidden: "{s} section hidden",
+  langSwitched: "Switched to English",
+  autoSwitchOn: "Auto-switch balance provider: ON",
+  autoSwitchOff: "Auto-switch balance provider: OFF",
+  providerManual: "Balance provider: {p} (auto-switch off)",
+  runInSession: "Please run this command inside a session",
+  backToMain: "Switched to main session",
+  subAgentSwitched: "Showing sub-agent: {s}",
 } as const
 
 // ── color helpers ────────────────────────────────────────────────
@@ -1564,6 +1610,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   /** 弹出指定 provider 的 API Key 输入框（脱敏预填；空清除 / 含 * 保留原 key / 新 key 实时刷新）。 */
   const promptBalanceKey = (dialog: TuiDialogStack | undefined, provider: BalanceProvider) => {
     const zh = langZH()
+    const T = zh ? ZH_T : EN_T
     const current = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
     const masked = maskKey(current)
     dialog?.replace(() => (
@@ -1585,9 +1632,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
           api.kv.set(`${KV_PREFIX}.balance.${provider.id}.key`, key)
           setBalanceRefresh(v => v + 1)
           if (key) {
-            api.ui.toast({ message: zh ? "API Key 已保存，正在查询余额..." : "API Key saved, fetching balance..." })
+            api.ui.toast({ message: T.keySaved })
           } else {
-            api.ui.toast({ message: zh ? "API Key 已清除" : "API Key cleared" })
+            api.ui.toast({ message: T.keyCleared })
           }
           dialog?.clear()
         }}
@@ -1620,7 +1667,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               signals.setBalanceCurrency(opt.value)
               signals.setCurrencySymbol(sym)
               signals.setExchangeRate(defRate)
-              api.ui.toast({ message: `Currency: ${opt.value} (${sym}), rate: ${defRate}` })
+              api.ui.toast({ message: (langZH() ? ZH_T : EN_T).currencySet.replace("{v}", opt.value).replace("{s}", sym).replace("{r}", String(defRate)) })
               dialog?.clear()
             }}
           />
@@ -1644,7 +1691,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               if (n > 0) {
                 api.kv.set(`${KV_PREFIX}.rate`, n)
                 signals.setExchangeRate(n)
-                api.ui.toast({ message: `Exchange rate set to ${n}` })
+                api.ui.toast({ message: (langZH() ? ZH_T : EN_T).rateSet.replace("{r}", String(n)) })
               }
               dialog?.clear()
             }}
@@ -1658,6 +1705,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Show or hide a sidebar section",
       slash: { name: "cache-section" },
       onSelect: (dialog) => {
+        const zh = langZH()
+        const T = zh ? ZH_T : EN_T
         const detailOn = Boolean(api.kv.get(`${KV_PREFIX}.section.detail`, true))
         const modelOn  = Boolean(api.kv.get(`${KV_PREFIX}.section.model`, true))
         const distOn   = Boolean(api.kv.get(`${KV_PREFIX}.section.dist`, true))
@@ -1665,24 +1714,34 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         const balanceOn = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
         const bottomOn = Boolean(api.kv.get(`${KV_PREFIX}.section.bottom`, true))
         const borderOn = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
+        const labels: Record<string, string> = {
+          detail:  T.secDetail,
+          model:   T.secModel,
+          dist:    T.distTitle,
+          skills:  T.secSkills,
+          balance: T.secBalance,
+          bottom:  T.secBottom,
+          border:  T.secBorder,
+        }
+        const optTitle = (label: string, on: boolean) => `${visualPadEnd(label, 15)}[${on ? "ON" : "OFF"}]`
         dialog?.replace(() => (
           <api.ui.DialogSelect
-            title="Toggle Section"
+            title={T.secToggle}
             options={[
-              { title: `Token Detail    [${detailOn ? "ON" : "OFF"}]`,  value: "detail" },
-              { title: `Model & Pricing [${modelOn  ? "ON" : "OFF"}]`,  value: "model" },
-              { title: `Token Dist.     [${distOn   ? "ON" : "OFF"}]`,  value: "dist" },
-              { title: `Loaded Skills   [${skillsOn ? "ON" : "OFF"}]`,  value: "skills" },
-              { title: `Balance         [${balanceOn ? "ON" : "OFF"}]`, value: "balance" },
-              { title: `Bottom Bar      [${bottomOn ? "ON" : "OFF"}]`,  value: "bottom" },
-              { title: `Panel Border    [${borderOn ? "ON" : "OFF"}]`,  value: "border" },
+              { title: optTitle(labels.detail, detailOn),   value: "detail" },
+              { title: optTitle(labels.model, modelOn),     value: "model" },
+              { title: optTitle(labels.dist, distOn),       value: "dist" },
+              { title: optTitle(labels.skills, skillsOn),   value: "skills" },
+              { title: optTitle(labels.balance, balanceOn), value: "balance" },
+              { title: optTitle(labels.bottom, bottomOn),   value: "bottom" },
+              { title: optTitle(labels.border, borderOn),   value: "border" },
             ]}
             onSelect={(opt) => {
               if (opt.value === "border") {
                 const cur = Boolean(api.kv.get(`${KV_PREFIX}.border`, true))
                 api.kv.set(`${KV_PREFIX}.border`, !cur)
                 signals.setBorderVisible(!cur)
-                api.ui.toast({ message: `Panel border ${!cur ? "shown" : "hidden"}` })
+                api.ui.toast({ message: !cur ? T.borderShown : T.borderHidden })
               } else {
                 const key = `${KV_PREFIX}.section.${opt.value}`
                 const cur = Boolean(api.kv.get(key, true))
@@ -1693,7 +1752,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 if (opt.value === "skills") signals.setSectionSkills(!cur)
                 if (opt.value === "balance") signals.setSectionBalance(!cur)
                 if (opt.value === "bottom")  signals.setSectionBottom(!cur)
-                api.ui.toast({ message: `${opt.value} section ${!cur ? "shown" : "hidden"}` })
+                const name = labels[opt.value] ?? opt.value
+                api.ui.toast({ message: (!cur ? T.sectionShown : T.sectionHidden).replace("{s}", name) })
               }
               dialog?.clear()
             }}
@@ -1707,6 +1767,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       description: "Display the current plugin configuration",
       slash: { name: "cache-config" },
       onSelect: (dialog) => {
+        const T = langZH() ? ZH_T : EN_T
         const sym = api.kv.get<string>(`${KV_PREFIX}.currency`) ?? "$"
         const rate = api.kv.get<number>(`${KV_PREFIX}.rate`) ?? 1
         const detail = Boolean(api.kv.get(`${KV_PREFIX}.section.detail`, true))
@@ -1715,9 +1776,14 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         const skills = Boolean(api.kv.get(`${KV_PREFIX}.section.skills`, true))
         const balance = Boolean(api.kv.get(`${KV_PREFIX}.section.balance`, true))
         const bottom = Boolean(api.kv.get(`${KV_PREFIX}.section.bottom`, true))
+        const on = (v: boolean) => v ? "ON" : "OFF"
         api.ui.toast({
-          title: "Cache Panel Config",
-          message: `Currency: ${sym}  |  Rate: ${rate}  |  Detail: ${detail ? "ON" : "OFF"}  |  Model: ${model ? "ON" : "OFF"}  |  Dist: ${dist ? "ON" : "OFF"}  |  Skills: ${skills ? "ON" : "OFF"}  |  Balance: ${balance ? "ON" : "OFF"}  |  Bottom: ${bottom ? "ON" : "OFF"}`,
+          title: T.panelConfigTitle,
+          message: T.panelConfigMsg
+            .replace("{c}", sym).replace("{r}", String(rate))
+            .replace("{d}", on(detail)).replace("{m}", on(model))
+            .replace("{t}", on(dist)).replace("{k}", on(skills))
+            .replace("{b}", on(balance)).replace("{f}", on(bottom)),
           duration: 8000,
         })
         dialog?.clear()
@@ -1741,7 +1807,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
               const zh = opt.value === "zh"
               api.kv.set(`${KV_PREFIX}.lang`, opt.value)
               setLangZH(zh)
-              api.ui.toast({ message: zh ? "语言已切换为中文" : "Switched to English" })
+              api.ui.toast({ message: zh ? ZH_T.langSwitched : EN_T.langSwitched })
               dialog?.clear()
             }}
           />
@@ -1778,7 +1844,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 const next = !auto
                 api.kv.set(`${KV_PREFIX}.balance.auto`, next)
                 signals.setAutoBalance(next)
-                api.ui.toast({ message: zh ? `自动切换余额提供商: ${next ? "开" : "关"}` : `Auto-switch balance provider: ${next ? "ON" : "OFF"}` })
+                api.ui.toast({ message: next ? (zh ? ZH_T.autoSwitchOn : EN_T.autoSwitchOn) : (zh ? ZH_T.autoSwitchOff : EN_T.autoSwitchOff) })
                 dialog?.clear()
               } else {
                 const provider = getBalanceProvider(opt.value)
@@ -1795,7 +1861,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                   // 未配置 key → 进入设置流程（对话框保持打开等待输入）
                   promptBalanceKey(dialog, provider)
                 } else {
-                  api.ui.toast({ message: zh ? `余额提供商: ${provider.name}（自动切换已关闭）` : `Balance provider: ${provider.name} (auto-switch off)` })
+                  api.ui.toast({ message: (zh ? ZH_T : EN_T).providerManual.replace("{p}", provider.name) })
                   dialog?.clear()
                 }
               }
@@ -1843,7 +1909,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       onSelect: () => {
         const rt = api.route.current
         if (rt.name !== "session" || !rt.params) {
-          api.ui.toast({ message: "Please run this command inside a session", variant: "warning" })
+          api.ui.toast({ message: (langZH() ? ZH_T : EN_T).runInSession, variant: "warning" })
           return
         }
         const sid = String(rt.params.sessionID)
@@ -1943,11 +2009,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 if (opt.value === backValue) {
                   signals.setOverrideSessionId(undefined)
                   api.kv.set(`${KV_PREFIX}.session`, "")
-                  api.ui.toast({ message: zh ? "已切回主会话" : "Switched to main session" })
+                  api.ui.toast({ message: (zh ? ZH_T : EN_T).backToMain })
                 } else {
                   signals.setOverrideSessionId(opt.value)
                   api.kv.set(`${KV_PREFIX}.session`, opt.value)
-                  api.ui.toast({ message: (zh ? "已切换至子代理: " : "Showing sub-agent: ") + opt.value.slice(0, 24) + "\u2026" })
+                  api.ui.toast({ message: (zh ? ZH_T : EN_T).subAgentSwitched.replace("{s}", opt.value.slice(0, 24) + "\u2026") })
                 }
                 dialog?.clear()
               }}
@@ -1967,7 +2033,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 if (sid) {
                   signals.setOverrideSessionId(sid)
                   api.kv.set(`${KV_PREFIX}.session`, sid)
-                  api.ui.toast({ message: (langZH() ? "已切换至子代理: " : "Showing sub-agent: ") + sid.slice(0, 24) + "\u2026" })
+                  api.ui.toast({ message: (langZH() ? ZH_T : EN_T).subAgentSwitched.replace("{s}", sid.slice(0, 24) + "\u2026") })
                 }
                 dialog?.clear()
               }}
@@ -1985,7 +2051,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       onSelect: (dialog) => {
         signals.setOverrideSessionId(undefined)
         api.kv.set(`${KV_PREFIX}.session`, "")
-        api.ui.toast({ message: langZH() ? "已切回主会话" : "Switched to main session" })
+        api.ui.toast({ message: (langZH() ? ZH_T : EN_T).backToMain })
         dialog?.clear()
       },
     },
