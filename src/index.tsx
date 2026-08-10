@@ -354,7 +354,7 @@ interface TokenDist {
   toolResult: number // ToolPart completed output / error
   output: number   // AssistantMessage.tokens.output (fallback)
   apiOutput: number // StepFinishPart.tokens.output (API exact, preferred)
-  apiInput: number  // StepFinishPart.tokens.input (API exact total context)
+  apiInput: number  // API exact total input context (input + cache read + cache write)
   stepCost: number
 }
 
@@ -746,10 +746,10 @@ function TokenCachePanel(props: {
         for (let i = msgs.length - 1; i >= 0; i--) {
           if (msgs[i].role !== "assistant") continue
           const t = (msgs[i] as AssistantMessage).tokens
-          if (t && (t.input > 0 || (t.cache?.read ?? 0) > 0)) { lastAssMsg = msgs[i] as AssistantMessage; break }
+          if (t && ((t.input ?? 0) > 0 || (t.cache?.read ?? 0) > 0 || (t.cache?.write ?? 0) > 0)) { lastAssMsg = msgs[i] as AssistantMessage; break }
         }
-        // 取最后一条有数据消息的总输入（含缓存读）作为当前 context 大小
-        dist.apiInput = num(lastAssMsg?.tokens?.input) + num(lastAssMsg?.tokens?.cache?.read)
+        // 取最后一条有数据消息的总输入（含缓存读/写）作为当前 context 大小
+        dist.apiInput = num(lastAssMsg?.tokens?.input) + num(lastAssMsg?.tokens?.cache?.read) + num(lastAssMsg?.tokens?.cache?.write)
         dist.apiOutput = num(lastAssMsg?.tokens?.output)
         hasDistData = dist.system + dist.user + dist.agent + dist.toolCall + dist.toolResult > 0 || dist.apiOutput > 0 || dist.apiInput > 0
       } catch {}
