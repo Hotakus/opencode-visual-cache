@@ -3,7 +3,7 @@
 // satisfies `Translation`; the compiler enforces key completeness.
 // ---------------------------------------------------------------------------
 
-export type LangCode = "zh" | "en"
+export type LangCode = "zh" | "en" | "ja" | "ko"
 
 const ZH_T = {
   title:      "缓存统计",
@@ -172,12 +172,178 @@ const EN_T: Translation = {
   subNoFound: "No sub-agents found. Paste a Session ID manually",
 }
 
-export const LANGS: Record<LangCode, Translation> = { zh: ZH_T, en: EN_T }
+const JA_T: Translation = {
+  title:      "キャッシュ統計",
+  hit:        "ヒット率",
+  totalHit:   "総ヒット:",
+  read:       "キャッシュ読込:",
+  write:      "キャッシュ書込:",
+  miss:       "未ヒット:",
+  out:        "出力:",
+  cost:       "費用:",
+  saved:      "累計節約:",
+  model:      "モデル:",
+  provider:   "プロバイダ:",
+  rate:       "単価:",
+  hitFolded:  "ヒット",
+  inputRate:  "入力",
+  cacheRate:  "キャッシュ",
+  writeRate:  "書込",
+  noData:    "キャッシュデータ待機中...",
+  tok:        "tok",
+  distTitle:  "Token 分布（推定）",
+  distSys:    "システム:",
+  distUser:   "ユーザー:",
+  distAgent:  "Agent 指示:",
+  distTool:   "Tool 呼び出し:",
+  distRes:    "Tool 結果:",
+  distTotal:  "合計:",
+  distOut:    "出力:",
+  secDetail:  "明細",
+  secModel:   "モデル",
+  secSkills:  "読み込み済みスキル",
+  balTotal:   "総残高:",
+  balNoKey:   "{p} の API Key 未設定",
+  balLoading: "取得中...",
+  balError:   "取得失敗",
+  balErr401:  "API Key 無効",
+  balErr403:  "残高照会が拒否されました",
+  balErrEmpty:"残高データなし",
+  balErrTimeout: "タイムアウト",
+  balUnsupported: "このプロバイダは残高照会非対応",
+  barHit:     "ヒット率",
+  barBal:     "残高",
+  barTok:     "Tokens",
+  // ── /cache-section パネル ──
+  secToggle:  "セクション切替",
+  secBalance: "残高",
+  secBottom:  "下部ステータスバー",
+  secBorder:  "パネル枠線",
+  // ── toast ──
+  keySaved:   "API Key 保存済み、残高を取得中...",
+  keyCleared: "API Key をクリアしました",
+  currencySet: "通貨: {v} ({s}), レート: {r}",
+  rateSet:    "レートを {r} に設定しました",
+  panelConfigTitle: "パネル設定",
+  panelConfigMsg: "通貨: {c} | レート: {r} | 明細: {d} | モデル: {m} | 分布: {t} | スキル: {k} | 残高: {b} | 下部: {f}",
+  borderShown: "パネル枠線 表示",
+  borderHidden: "パネル枠線 非表示",
+  sectionShown: "{s} 表示",
+  sectionHidden: "{s} 非表示",
+  langSwitched: "日本語に切り替えました",
+  autoSwitchOn: "残高プロバイダ自動切替: オン",
+  autoSwitchOff: "残高プロバイダ自動切替: オフ",
+  providerManual: "残高プロバイダ: {p}（自動切替オフ）",
+  runInSession: "セッション内で実行してください",
+  backToMain: "メインセッションに戻りました",
+  subAgentSwitched: "サブエージェントへ切替: {s}",
+  // ── ダイアログ / メニュー ──
+  langTitle:  "表示言語",
+  subPrefix:  "サブ: ",
+  keyUser:    "（ユーザー key）",
+  keyOpenCode: "（OpenCode）",
+  keyNotSet:  "（未設定）",
+  balKeyPrompt: "{p} の API Key を入力して残高を表示（空欄でクリア）",
+  balProvTitle: "残高プロバイダ / 自動切替",
+  autoSwitchOpt: "自動切替プロバイダ",
+  balSelectTitle: "残高プロバイダ選択",
+  backToMainTitle: "メインに戻る",
+  subSelectTitle: "サブエージェント選択",
+  subSwitchTitle: "サブ切替",
+  subViewTitle: "サブキャッシュ表示",
+  subNoFound: "サブエージェントが見つかりません。Session ID を手動で貼り付けてください",
+}
+
+const KO_T: Translation = {
+  title:      "캐시 통계",
+  hit:        "히트율",
+  totalHit:   "총 히트:",
+  read:       "캐시 읽기:",
+  write:      "캐시 쓰기:",
+  miss:       "미히트:",
+  out:        "출력:",
+  cost:       "비용:",
+  saved:      "누적 절약:",
+  model:      "모델:",
+  provider:   "프로바이더:",
+  rate:       "단가:",
+  hitFolded:  "히트",
+  inputRate:  "입력",
+  cacheRate:  "캐시",
+  writeRate:  "쓰기",
+  noData:    "캐시 데이터 대기 중...",
+  tok:        "tok",
+  distTitle:  "Token 분포(추정)",
+  distSys:    "시스템:",
+  distUser:   "사용자:",
+  distAgent:  "Agent 지시:",
+  distTool:   "Tool 호출:",
+  distRes:    "Tool 결과:",
+  distTotal:  "합계:",
+  distOut:    "출력:",
+  secDetail:  "상세",
+  secModel:   "모델",
+  secSkills:  "로드된 스킬",
+  balTotal:   "총 잔액:",
+  balNoKey:   "{p} API Key 미설정",
+  balLoading: "조회 중...",
+  balError:   "조회 실패",
+  balErr401:  "API Key 무효",
+  balErr403:  "잔액 조회가 거부되었습니다",
+  balErrEmpty:"잔액 데이터 없음",
+  balErrTimeout: "시간 초과",
+  balUnsupported: "이 프로바이더는 잔액 조회 미지원",
+  barHit:     "히트율",
+  barBal:     "잔액",
+  barTok:     "Tokens",
+  // ── /cache-section 패널 ──
+  secToggle:  "섹션 전환",
+  secBalance: "잔액",
+  secBottom:  "하단 상태바",
+  secBorder:  "패널 테두리",
+  // ── toast ──
+  keySaved:   "API Key 저장됨, 잔액 조회 중...",
+  keyCleared: "API Key 삭제됨",
+  currencySet: "통화: {v} ({s}), 환율: {r}",
+  rateSet:    "환율을 {r}(으)로 설정했습니다",
+  panelConfigTitle: "패널 설정",
+  panelConfigMsg: "통화: {c} | 환율: {r} | 상세: {d} | 모델: {m} | 분포: {t} | 스킬: {k} | 잔액: {b} | 하단: {f}",
+  borderShown: "패널 테두리 표시",
+  borderHidden: "패널 테두리 숨김",
+  sectionShown: "{s} 표시",
+  sectionHidden: "{s} 숨김",
+  langSwitched: "한국어로 전환했습니다",
+  autoSwitchOn: "잔액 프로바이더 자동 전환: 켜짐",
+  autoSwitchOff: "잔액 프로바이더 자동 전환: 꺼짐",
+  providerManual: "잔액 프로바이더: {p}(자동 전환 꺼짐)",
+  runInSession: "세션 내에서 실행해 주세요",
+  backToMain: "메인 세션으로 돌아갔습니다",
+  subAgentSwitched: "서브 에이전트로 전환: {s}",
+  // ── 다이얼로그 / 메뉴 ──
+  langTitle:  "표시 언어",
+  subPrefix:  "서브: ",
+  keyUser:    "(사용자 key)",
+  keyOpenCode: "(OpenCode)",
+  keyNotSet:  "(미설정)",
+  balKeyPrompt: "{p} API Key를 입력하여 잔액 표시(비우면 삭제)",
+  balProvTitle: "잔액 프로바이더 / 자동 전환",
+  autoSwitchOpt: "자동 전환 프로바이더",
+  balSelectTitle: "잔액 프로바이더 선택",
+  backToMainTitle: "메인으로 돌아가기",
+  subSelectTitle: "서브 에이전트 선택",
+  subSwitchTitle: "서브 전환",
+  subViewTitle: "서브 캐시 보기",
+  subNoFound: "서브 에이전트를 찾을 수 없습니다. Session ID를 직접 붙여넣으세요",
+}
+
+export const LANGS: Record<LangCode, Translation> = { zh: ZH_T, en: EN_T, ja: JA_T, ko: KO_T }
 
 /** 语言元数据：/cache-lang 选项与自动检测共用。 */
 export const LANG_META: { code: LangCode; label: string }[] = [
   { code: "zh", label: "中文" },
   { code: "en", label: "English" },
+  { code: "ja", label: "日本語" },
+  { code: "ko", label: "한국어" },
 ]
 
 /**
@@ -200,11 +366,14 @@ export function createT(getCode: () => LangCode) {
     applyParams(LANGS[getCode()][key], params)
 }
 
-/** 按系统 locale 自动检测语言（zh 前缀 → 中文，其余 → 英文）。 */
+/** 按系统 locale 自动检测语言（zh → 中文，ja → 日语，ko → 韩语，其余 → 英文）。 */
 export function detectLang(): LangCode {
   try {
     const loc = Intl.DateTimeFormat().resolvedOptions().locale.toLowerCase()
-    return loc.startsWith("zh") ? "zh" : "en"
+    if (loc.startsWith("zh")) return "zh"
+    if (loc.startsWith("ja")) return "ja"
+    if (loc.startsWith("ko")) return "ko"
+    return "en"
   } catch {
     return "en"
   }
