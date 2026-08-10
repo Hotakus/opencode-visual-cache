@@ -46,7 +46,7 @@ Interested in sub-agent monitoring? Check out [opencode-subagent-magazine](https
 - **Model Pricing**: Input / cache-read / cache-write per-million rates (read from provider config dynamically)
 - **Collapsible**: Main title collapsed by default; click to expand. Detail, model, and distribution sections fold independently
 - **Adaptive Colors**: ≥85% green · ≥70% orange · <70% red, auto-desaturated from current theme
-- **Token Distribution**: Per-role (system / user / agent instr / tool call / tool result) estimated token breakdown
+- **Token Distribution**: Per-role (system / user / sub-agent instr / tool call / tool result) estimated token breakdown
 - **Persistent State**: Fold preferences and config remembered across restarts via api.kv
 - **Language**: Chinese / English / 日本語 / 한국어, auto-detects system locale, with `/cache-lang` for runtime switching — user preference takes priority over auto-detection
 - **Multi-currency**: Switch via `/cache-currency` — costs, savings, and per-million rates convert in real time
@@ -150,7 +150,7 @@ Three sub-sections can be toggled independently to save sidebar space:
 
 Toggled via `/cache-section` — takes effect instantly, no restart required. The same command also toggles the panel **border**; turning it off removes the outline and padding so content fills the full width.
 
-> **About Token Dist. values**: The "Total" row is the exact token count of the **last API call** (input + cache read + cache write); the per-role rows (system / user / agent instr / tool call / tool result) are character-based BPE **estimates accumulated across the whole session**, and "Reasoning"/"Output" are exact API values accumulated across the session. The breakdown rows and the Total have **different scopes** (session cumulative vs. last call) and are **not directly comparable** — the breakdown only shows the rough composition of each content type in the session. OpenCode also injects extra system prompt content at runtime — environment info, skill catalog, tool schema definitions (see [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts), [`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)) — which the plugin cannot estimate. Output already excludes reasoning tokens per OpenCode's accounting.
+> **About Token Dist. values**: The "Total" row is the exact token count of the **last API call** (input + cache read + cache write); the per-role rows (system / user / sub-agent instr / tool call / tool result) are character-based BPE **estimates accumulated across the whole session**, and "Reasoning"/"Output" are exact API values accumulated across the session. The breakdown rows and the Total have **different scopes** (session cumulative vs. last call) and are **not directly comparable** — the breakdown only shows the rough composition of each content type in the session. OpenCode also injects extra system prompt content at runtime — environment info, skill catalog, tool schema definitions (see [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts), [`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)) — which the plugin cannot estimate. Output already excludes reasoning tokens per OpenCode's accounting.
 
 ### 4.4 Balance Query
 

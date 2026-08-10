@@ -259,7 +259,7 @@ function estimateTokens(text: string): number {
 interface TokenDist {
   system: number   // UserMessage.system
   user: number     // user message text/file parts
-  agent: number    // SubtaskPart.prompt + ReasoningPart.text
+  agent: number    // task tool input prompt/description (sub-agent delegation)
   toolCall: number // ToolPart.input (actual tool params)
   toolResult: number // ToolPart completed output / error
   output: number   // AssistantMessage.tokens.output (API exact, reasoning excluded)
@@ -630,6 +630,13 @@ function TokenCachePanel(props: {
                 const tp = p as any; let rawInput = ""
                 try { rawInput = tp.state.raw ?? (tp.state.input != null ? JSON.stringify(tp.state.input) : "") } catch {}
                 if (rawInput) dist.toolCall += estimateTokens(rawInput)
+                // 子代理委托（task 工具）：任务描述计入子代理指令（1.15.x 无 subtask part）
+                if (tp.tool === "task" && tp.state?.input) {
+                  const ti = tp.state.input
+                  const prompt = typeof ti.prompt === "string" ? ti.prompt : ""
+                  const desc = typeof ti.description === "string" ? ti.description : ""
+                  dist.agent += estimateTokens(prompt || desc)
+                }
                 if (tp.state.status === "completed") { const c = tp.state; if (c.output) dist.toolResult += estimateTokens(c.output) }
                 else if (tp.state.status === "error") { const e = tp.state; if (e.error) dist.toolResult += estimateTokens(e.error) }
                 if (tp.tool === "skill" && tp.state.status === "completed") {
@@ -650,8 +657,7 @@ function TokenCachePanel(props: {
                     }
                   }
                 }
-              } else if (p.type === "reasoning") dist.agent += estimateTokens((p as any).text)
-              else if (p.type === "subtask") { const sub = p as any; dist.agent += estimateTokens(sub.prompt || sub.description || "") }
+              } else if (p.type === "subtask") { const sub = p as any; dist.agent += estimateTokens(sub.prompt || sub.description || "") }
             }
           }
         }
