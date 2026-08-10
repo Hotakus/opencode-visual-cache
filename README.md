@@ -54,6 +54,7 @@
 - **斜杠命令**：`/cache-session` `/cache-session-back` `/cache-rate` `/cache-section` `/cache-config` `/cache-lang` 动态配置面板
 - **子代理缓存查看**：`/cache-session` 自动扫描并列出子代理，选择一个即可切换面板显示其缓存统计，支持 `/cache-session-back` 返回主会话
 - **已加载技能**：检测 session 中 LLM 调用 `skill` tool 的记录，展示已加载技能名及估算 Token 占用
+- **底部状态栏**：输入框提示行单行显示 命中率（含趋势）· Tokens · 余额，关闭侧边栏也能随时看到缓存统计，可经 `/cache-section` 隐藏
 
 ---
 
@@ -106,7 +107,7 @@ npm install -g opencode-visual-cache@latest
 | `/cache-session-back` | 返回主会话统计 | 从子代理缓存视图切回主会话 |
 | `/cache-currency` | 切换货币单位 | 从列表选择货币（USD / CNY / EUR / JPY / GBP / KRW），自动填入默认汇率 |
 | `/cache-rate` | 调整汇率乘数 | 输入自定义汇率（如 `7.2`），用于费用换算 |
-| `/cache-section` | 开关区块与边框 | 独立控制 Token 明细 / 模型与定价 / 估算 Token 分布 / 已加载技能 / 余额 / 面板边框的显隐 |
+| `/cache-section` | 开关区块与边框 | 独立控制 Token 明细 / 模型与定价 / 估算 Token 分布 / 已加载技能 / 余额 / 底部状态栏 / 面板边框的显隐 |
 | `/cache-config` | 查看当前配置 | 弹出当前货币、汇率、区块可见性状态 |
 | `/cache-lang` | 切换显示语言 | 从列表选择中文或 English，界面即时切换，无需重启 |
 | `/cache-balance` | 余额查询设置 | 选择余额提供商（菜单标注 Key 来源：用户 key / OpenCode / 未配置）/ 开关自动切换 |
@@ -145,6 +146,7 @@ npm install -g opencode-visual-cache@latest
 - **估算 Token 分布**：按角色拆分的 Token 估算
 - **已加载技能**：session 中 LLM 实际调用过的 Skill 名及估算 Token 占用
 - **余额**：当前提供商账户余额（多提供商 + 自动切换）
+- **底部状态栏**：输入框提示行的 命中率 · Tokens · 余额 单行统计
 
 通过 `/cache-section` 切换后即时生效，无需重启。此外，该命令还可以开关面板的**外边框**——关闭后内容会顶格显示，释放额外空间。
 
@@ -172,6 +174,10 @@ npm install -g opencode-visual-cache@latest
 > **自动切换**：默认开启；手动选择提供商后自动关闭，可在 `/cache-balance` 中重新开启。自动切换按当前会话的模型提供商匹配，未配置 Key 的提供商被选中时显示「未配置」提示。
 >
 > **希望支持**：已调研确认具备可行性的候选提供商，尚未实现。智谱 GLM 仅有社区逆向的非官方端点（无稳定性保障）。
+>
+> **统计口径**：命中率 = 缓存读 /（新鲜输入 + 缓存读 + 缓存写），与业界（OpenAI / Anthropic / Bedrock）口径一致；明细中「未命中」= 新鲜输入 + 缓存写。底部栏的 Tokens 为输入侧总量（不含输出）。未单独报告缓存写的提供商（如 DeepSeek）自动退化为 hit/miss 口径。
+>
+> **余额显示**：侧边栏与底部栏共享同一份余额数据，两处显示一致。当前提供商不支持余额查询时，侧边栏显示提示、底部栏隐藏余额项。
 
 ---
 

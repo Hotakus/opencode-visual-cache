@@ -54,6 +54,7 @@ Interested in sub-agent monitoring? Check out [opencode-subagent-magazine](https
 - **Slash Commands**: `/cache-session` `/cache-session-back` `/cache-rate` `/cache-section` `/cache-config` `/cache-lang` for live panel configuration
 - **Sub-Agent Cache View**: `/cache-session` auto-scans and lists sub-agents; select one to switch the panel stats. Use `/cache-session-back` to return to the main session
 - **Loaded Skills**: Detects `skill` tool calls in the session and displays loaded skill names with estimated token footprint
+- **Bottom Status Bar**: single-line hit rate (with trend) · Tokens · Balance in the prompt hint row — visible even with the sidebar closed; hide it anytime via `/cache-section`
 
 ---
 
@@ -106,7 +107,7 @@ The plugin supports slash commands and command palette (`Ctrl + P`) for runtime 
 | `/cache-session-back` | Return to main session | Switch back to main session from sub-agent cache view |
 | `/cache-currency` | Switch currency | Pick from a list (USD / CNY / EUR / JPY / GBP / KRW); default exchange rate auto-filled |
 | `/cache-rate` | Adjust exchange rate | Enter a custom rate (e.g. `7.2` for CNY) |
-| `/cache-section` | Toggle sections & border | Independently show/hide Detail, Model & Pricing, Token Distribution, Loaded Skills, Balance, or the panel border |
+| `/cache-section` | Toggle sections & border | Independently show/hide Detail, Model & Pricing, Token Distribution, Loaded Skills, Balance, Bottom Bar, or the panel border |
 | `/cache-config` | View current config | Displays currency, rate, and section visibility |
 | `/cache-lang` | Switch display language | Pick Chinese or English from the dialog — takes effect immediately, no restart needed |
 | `/cache-balance` | Balance query settings | Pick a balance provider (menu shows key source: user key / OpenCode / not set) / toggle auto-switch |
@@ -145,6 +146,7 @@ Three sub-sections can be toggled independently to save sidebar space:
 - **Estimated Token Dist.**: per-role token breakdown
 - **Loaded Skills**: skill names the LLM actually loaded via the `skill` tool, with estimated token counts
 - **Balance**: the selected provider's account balance (multi-provider with auto-switch)
+- **Bottom Status Bar**: the single-line hit rate · Tokens · Balance stats in the prompt hint row
 
 Toggled via `/cache-section` — takes effect instantly, no restart required. The same command also toggles the panel **border**; turning it off removes the outline and padding so content fills the full width.
 
@@ -170,6 +172,10 @@ Supported balance providers:
 > **Auto-switch**: enabled by default; picking a provider manually disables it — re-enable anytime via `/cache-balance`. Auto-switch matches the current session's model provider; a provider without a key shows a "not set" hint when selected.
 >
 > **Planned**: candidates confirmed feasible by research, not yet implemented. Zhipu GLM only has a community-reversed unofficial endpoint (no stability guarantee).
+>
+> **Metric semantics**: hit rate = cache read / (fresh input + cache read + cache write), consistent with the industry (OpenAI / Anthropic / Bedrock). "Miss" in the detail view = fresh input + cache write. The bottom-bar Tokens is the input-side total (output excluded). Providers that do not report cache writes separately (e.g. DeepSeek) automatically fall back to the hit/miss formula.
+>
+> **Balance display**: the sidebar and bottom bar share the same balance data, so both show identical values. When the current provider has no balance adapter, the sidebar shows a hint and the bottom bar hides the balance segment.
 
 ---
 
