@@ -415,13 +415,21 @@ function fmtCompact(n: number): string {
   return String(Math.round(n))
 }
 
+/** 余额数值格式化：≥1 或 0 显示 2 位小数；小额（<1）保留精度（最多 6 位），避免抹成 0.00。 */
+function formatBalanceAmount(total: string): string {
+  const n = parseFloat(total)
+  if (!Number.isFinite(n)) return total
+  if (n === 0 || n >= 1) return n.toLocaleString("en-US", { maximumFractionDigits: 2 })
+  return n.toLocaleString("en-US", { maximumFractionDigits: 6 })
+}
+
 /**
  * 将余额列表格式化为单行文本。
  * 优先直接显示偏好币种（CNY/USD…）；偏好币种为换算币种时按汇率折算第一条余额。
  */
 function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): string {
   const native = pref ? list.find((x) => x.currency === pref) : undefined
-  if (native) return balanceSymbol(native.currency) + native.total
+  if (native) return balanceSymbol(native.currency) + formatBalanceAmount(native.total)
   const base = list[0]
   const baseAmt = parseFloat(base.total)
   const converted = Number.isFinite(baseAmt)
@@ -429,7 +437,7 @@ function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): st
     : baseAmt
   const shown = pref && base.currency !== pref
     ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
-    : base.total
+    : formatBalanceAmount(base.total)
   return balanceSymbol(pref || base.currency) + shown
 }
 
@@ -1230,33 +1238,9 @@ function TokenCachePanel(props: {
               </text>
             </Show>
             <Show when={balanceState().status === "ok" && balanceState().data}>
-              {(() => {
-                const list = balanceState().data!
-                const pref = balanceCurrency()
-                // 偏好币种是 DeepSeek 原生返回的（CNY/USD）→ 直接显示
-                const native = pref ? list.find(x => x.currency === pref) : undefined
-                if (native) {
-                  return (
-                    <text fg={pal().text}>
-                      {justify(t().balTotal, balanceSymbol(native.currency) + native.total)}
-                    </text>
-                  )
-                }
-                // 非原生币种（EUR/JPY/GBP/KRW…）→ 取第一条余额按汇率换算
-                const base = list[0]
-                const baseAmt = parseFloat(base.total)
-                const converted = Number.isFinite(baseAmt)
-                  ? convertBalance(pref || base.currency, exchangeRate(), baseAmt, base.currency)
-                  : baseAmt
-                const shown = pref && base.currency !== pref
-                  ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
-                  : base.total
-                return (
-                  <text fg={pal().text}>
-                    {justify(t().balTotal, balanceSymbol(pref || base.currency) + shown)}
-                  </text>
-                )
-              })()}
+              <text fg={pal().text}>
+                {justify(t().balTotal, formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
+              </text>
             </Show>
           </Show>
         </Show>
