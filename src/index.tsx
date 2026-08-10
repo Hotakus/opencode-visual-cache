@@ -9,6 +9,7 @@ import type {
   TuiPluginModule,
   TuiThemeCurrent,
   TuiDialogStack,
+  TuiPromptRef,
 } from "@opencode-ai/plugin/tui"
 import type { UserMessage, AssistantMessage, Message } from "@opencode-ai/sdk"
 import type {
@@ -123,6 +124,9 @@ const ZH_T = {
   balErr403:  "余额查询被拒绝",
   balErrEmpty:"未获取到余额数据",
   balErrTimeout: "查询超时",
+  barHit:     "命中率",
+  barBal:     "余额",
+  barTok:     "Tokens",
 } as const
 
 const EN_T = {
@@ -163,6 +167,9 @@ const EN_T = {
   balErr403:  "Balance request rejected",
   balErrEmpty:"No balance data",
   balErrTimeout: "Request timed out",
+  barHit:     "Hit",
+  barBal:     "Balance",
+  barTok:     "Tokens",
 } as const
 
 // ── color helpers ────────────────────────────────────────────────
@@ -399,6 +406,31 @@ function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
 function balanceSymbol(currency: string): string {
   const sym = CURRENCIES[currency]
   return sym ?? currency + " "
+}
+
+/** 紧凑数字缩写（底部状态栏用）：1234 → "1.2K"，1234567 → "1.2M"。 */
+function fmtCompact(n: number): string {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M"
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K"
+  return String(Math.round(n))
+}
+
+/**
+ * 将余额列表格式化为单行文本。
+ * 优先直接显示偏好币种（CNY/USD…）；偏好币种为换算币种时按汇率折算第一条余额。
+ */
+function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): string {
+  const native = pref ? list.find((x) => x.currency === pref) : undefined
+  if (native) return balanceSymbol(native.currency) + native.total
+  const base = list[0]
+  const baseAmt = parseFloat(base.total)
+  const converted = Number.isFinite(baseAmt)
+    ? convertBalance(pref || base.currency, rate, baseAmt, base.currency)
+    : baseAmt
+  const shown = pref && base.currency !== pref
+    ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
+    : base.total
+  return balanceSymbol(pref || base.currency) + shown
 }
 
 // ---------------------------------------------------------------------------
@@ -1235,6 +1267,153 @@ function TokenCachePanel(props: {
 // Plugin entry
 // ---------------------------------------------------------------------------
 
+/**
+ * 输入框 hint 行（session_prompt slot 的 hint）：单行显示 路径 · 命中率 · 余额 · Tokens。
+ * 通过 ui.Prompt 的 hint prop 注入——宿主右侧的 token/commands 提示自动保留，
+ * 三合一信息与路径同行显示在中间位置。
+ */
+function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sessionId: string }): JSX.Element {
+  const KV_PREFIX = "cache_panel"
+  const t = createMemo(() => (props.signals.langZH() ? ZH_T : EN_T))
+
+  const sid = props.sessionId
+
+  // ── 命中率 + token 汇总（复用侧边栏口径：最后一条有 token 的 assistant 消息）──
+  const stats = createMemo(() => {
+    const id = sid
+    if (!id) return null
+    const msgs = props.api.state.session.messages(id) as Message[]
+    const session = typeof props.api.state.session.get === "function"
+      ? props.api.state.session.get(id)
+      : undefined
+    let input = session?.tokens?.input ?? 0
+    let read = session?.tokens?.cache?.read ?? 0
+    let output = session?.tokens?.output ?? 0
+    let hitRate = -1
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role !== "assistant") continue
+      const tk = (m as AssistantMessage).tokens
+      if (!tk) continue
+      const mit = num(tk.input) + num(tk.cache?.read)
+      const mrt = num(tk.cache?.read)
+      if (mit > 0) { hitRate = (mrt / mit) * 100; break }
+    }
+    return { hitRate, input, read, output }
+  })
+
+  // ── 余额查询（独立轮询，共享 provider/key 逻辑）──
+  const [balanceState, setBalanceState] = createSignal<BalanceState>({
+    status: "idle", data: null, lastFetch: 0,
+  })
+  let balanceSeq = 0
+
+  const pollBalance = async () => {
+    const provider = getBalanceProvider(props.signals.balanceProviderId())
+    const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+      || findOpencodeKey(props.api, provider)
+    if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
+    const now = Date.now()
+    const prev = balanceState()
+    if (prev.status === "ok" && prev.key === key && now - prev.lastFetch < BALANCE_POLL_MS) return
+    const seq = ++balanceSeq
+    setBalanceState({ ...prev, status: "loading", error: undefined, key })
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
+    try {
+      const data = await provider.fetchBalance(key, controller.signal)
+      clearTimeout(timer)
+      if (seq !== balanceSeq) return
+      setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
+    } catch (err) {
+      clearTimeout(timer)
+      if (seq !== balanceSeq) return
+      const code = timedOut ? "TIMEOUT" : (err instanceof Error ? err.message : "")
+      setBalanceState({ status: "error", data: null, lastFetch: 0, error: code, key })
+    }
+  }
+
+  createEffect(() => {
+    void props.signals.balanceRefresh()
+    untrack(() => { void pollBalance() })
+  })
+
+  // 自动切换 provider（跟随当前会话模型；幂等，与侧边栏共享信号）
+  createEffect(() => {
+    if (!props.signals.autoBalance()) return
+    const id = sid
+    if (!id) return
+    const msgs = props.api.state.session.messages(id) as Message[]
+    let pid = ""
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role === "assistant" && (m as AssistantMessage).providerID) { pid = (m as AssistantMessage).providerID; break }
+    }
+    if (!pid) {
+      try { pid = props.api.state.session.get(id)?.model?.providerID ?? "" } catch {}
+    }
+    if (!pid) return
+    const hit = matchBalanceProvider(pid)
+    if (hit && hit.id !== props.signals.balanceProviderId()) {
+      props.signals.setBalanceProviderId(hit.id)
+      props.signals.setBalanceRefresh(props.signals.balanceRefresh() + 1)
+    }
+  })
+
+  // ── 主题色（与侧边栏同口径）──
+  const pal = createMemo(() => {
+    const th = props.api.theme.current as Record<string, unknown>
+    const sat = (k: string, fb: string) => desaturateTo(th[k], MAX_SAT, fb)
+    return {
+      text:    sat("text",      FALLBACK.text),
+      muted:   sat("textMuted", FALLBACK.muted),
+      success: sat("success",   FALLBACK.success),
+      warning: sat("warning",   FALLBACK.warning),
+      error:   sat("error",     FALLBACK.error),
+    }
+  })
+
+  const hitColor = createMemo(() => {
+    const r = stats()?.hitRate ?? -1
+    if (r >= 85) return pal().success
+    if (r >= 70) return pal().warning
+    return pal().error
+  })
+
+  const balanceText = createMemo(() => {
+    const s = balanceState()
+    if (s.status === "ok" && s.data) return formatBalanceText(s.data, props.signals.balanceCurrency(), props.signals.exchangeRate())
+    if (s.status === "loading") return "\u2026"
+    if (s.status === "error") return "\u26a0"
+    return "-"
+  })
+
+  // 路径显示（替换宿主默认 hint 左侧的 cwd 文本）
+  const directory = createMemo(() => {
+    try { return props.api.state.path.directory } catch { return "" }
+  })
+
+  return (
+    <box marginLeft={1} flexGrow={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
+      <text fg={pal().muted}>{directory()}</text>
+      <box flexDirection="row">
+        <text>
+          <span style={{ fg: pal().muted }}>{t().barHit} </span>
+          <span style={{ fg: hitColor() }}>{(stats()?.hitRate ?? -1) >= 0 ? (Math.floor(stats()!.hitRate * 10) / 10).toFixed(1) + "%" : "--"}</span>
+          <span style={{ fg: pal().muted }}>{" \u00b7 " + t().barTok + " "}</span>
+          <span style={{ fg: pal().text }}>
+            {stats() ? fmtCompact(stats()!.input + stats()!.read + stats()!.output) : "--"}
+          </span>
+          <span style={{ fg: pal().muted }}>{" \u00b7 " + t().barBal + " "}</span>
+          <span style={{ fg: pal().text }}>{balanceText()}</span>
+        </text>
+        <text fg={pal().muted}>{" \u00b7 "}</text>
+      </box>
+    </box>
+  )
+}
+
 function createSidebarSlot(api: TuiPluginApi, signals: PanelSignals): TuiSlotPlugin {
   let lastSlotSid = ""
   return {
@@ -1297,6 +1476,36 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   }
 
   api.slots.register(createSidebarSlot(api, signals))
+
+  // 输入框 hint 行（session_prompt slot，replace 模式）：
+  // 用宿主同一 Prompt 组件重渲染输入框，仅替换 hint 行左侧——
+  // 在路径与右侧 token/commands 提示之间插入 命中率 · 余额 · Tokens。
+  api.slots.register({
+    order: 55,
+    slots: {
+      session_prompt(
+        _ctx: TuiSlotContext,
+        input: {
+          session_id: string
+          visible?: boolean
+          disabled?: boolean
+          on_submit?: () => void
+          ref?: (ref: TuiPromptRef | undefined) => void
+        },
+      ): JSX.Element {
+        return (
+          <api.ui.Prompt
+            sessionID={input.session_id}
+            visible={input.visible}
+            disabled={input.disabled}
+            onSubmit={input.on_submit}
+            ref={input.ref}
+            hint={<BottomStatusBar api={api} signals={signals} sessionId={input.session_id} />}
+          />
+        )
+      },
+    },
+  })
 
   // ── slash commands for runtime config ──
   const KV_PREFIX = "cache_panel"
