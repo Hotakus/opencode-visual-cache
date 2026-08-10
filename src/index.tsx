@@ -417,11 +417,11 @@ function fmtCompact(n: number): string {
   return String(Math.round(n))
 }
 
-/** 余额数值格式化：≥1 或 0 显示 2 位小数；小额（<1）保留精度（最多 6 位），避免抹成 0.00。 */
+/** 余额数值格式化：≥1 或 0 显示固定 2 位小数；小额（<1）保留精度（最多 6 位），避免抹成 0.00。 */
 function formatBalanceAmount(total: string): string {
   const n = parseFloat(total)
   if (!Number.isFinite(n)) return total
-  if (n === 0 || n >= 1) return n.toLocaleString("en-US", { maximumFractionDigits: 2 })
+  if (n === 0 || n >= 1) return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return n.toLocaleString("en-US", { maximumFractionDigits: 6 })
 }
 
@@ -482,6 +482,8 @@ interface PanelSignals {
   /** True when the session's provider has no balance adapter (auto mode). Suppresses balance polling. */
   balanceUnsupported: () => boolean
   setBalanceUnsupported: (v: boolean) => void
+  /** Shared balance query state — single source of truth for sidebar and bottom bar. */
+  balanceState: () => BalanceState
   /** Preferred currency code for balance display (CNY / USD / …). Empty = first entry. */
   balanceCurrency: () => string
   setBalanceCurrency: (v: string) => void
@@ -541,6 +543,7 @@ function TokenCachePanel(props: {
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
     balanceUnsupported, setBalanceUnsupported,
+    balanceState,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
   } = props.signals
@@ -575,54 +578,8 @@ function TokenCachePanel(props: {
   })
   const [refreshTick, setRefreshTick] = createSignal(0)
 
-  // ── balance state + polling ──────────────────────────────────
-  const [balanceState, setBalanceState] = createSignal<BalanceState>({
-    status: "idle", data: null, lastFetch: 0,
-  })
-  // 请求序号：防止定时轮询与手动刷新并发时，慢的旧请求覆盖新结果
-  let balanceSeq = 0
-
-  // 当前 provider 显示名
+  // 当前 provider 显示名（余额查询状态为共享信号，见 PanelSignals.balanceState）
   const providerName = createMemo(() => getBalanceProvider(balanceProviderId()).name)
-
-  const pollBalance = async () => {
-    const provider = getBalanceProvider(balanceProviderId())
-    // 手动配置的 key 优先；缺失时自动复用 OpenCode 已认证的 key（auth.json / config）
-    const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
-      || findOpencodeKey(props.api, provider)
-    if (balanceUnsupported()) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
-    if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
-    const now = Date.now()
-    const prev = balanceState()
-    // key 已更换（重新输入）→ 强制重新查询，绕过缓存
-    if (prev.status === "ok" && prev.key === key && now - prev.lastFetch < BALANCE_POLL_MS) return // cache still fresh
-    const seq = ++balanceSeq
-    setBalanceState({ ...prev, status: "loading", error: undefined, key })
-    const controller = new AbortController()
-    let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
-    try {
-      const data = await provider.fetchBalance(key, controller.signal)
-      clearTimeout(timer)
-      if (seq !== balanceSeq) return // 已被更新的请求取代，丢弃过期结果
-      setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
-    } catch (err) {
-      clearTimeout(timer)
-      if (seq !== balanceSeq) return
-      const code = timedOut ? "TIMEOUT" : (err instanceof Error ? err.message : "")
-      // 失败时清空旧数据，避免显示过期余额
-      setBalanceState({ status: "error", data: null, lastFetch: 0, error: code, key })
-    }
-  }
-
-  // Re-fetch when the API key is (re)configured via /cache-balance-key.
-  // 注意：pollBalance 内部读写 balanceState 信号，若不做 untrack 包裹，
-  // effect 会追踪 balanceState 的变化并与 pollBalance 的 setBalanceState
-  // 形成无限循环（每次重跑都发起新的 fetch 请求）。
-  createEffect(() => {
-    void balanceRefresh()
-    untrack(() => { void pollBalance() })
-  })
 
   // 自动切换当前会话的 provider（前缀匹配）。手动切换会关闭此行为。
   // 直接追踪 messages 取最后一条 assistant 消息的 providerID——
@@ -703,7 +660,7 @@ function TokenCachePanel(props: {
     for (const msg of msgs) {
       if (msg.role !== "assistant") continue
       const t = (msg as AssistantMessage).tokens; if (!t) continue
-      const mit = num(t.input) + num(t.cache?.read), mrt = num(t.cache?.read)
+      const mit = num(t.input) + num(t.cache?.read) + num(t.cache?.write), mrt = num(t.cache?.read)
       if (mit > 0) { prevMsgHitRate = lastMsgHitRate; lastMsgHitRate = (mrt / mit) * 100 }
       if (fallbackTokens) {
         input += num(t.input); read += num(t.cache?.read); write += num(t.cache?.write); output += num(t.output)
@@ -724,7 +681,8 @@ function TokenCachePanel(props: {
       break
     }
     const hitRate = lastMsgHitRate >= 0 ? lastMsgHitRate : 0
-    const freshTotal = input + read, sessionHitRate = freshTotal > 0 ? (read / freshTotal) * 100 : 0
+    // 总命中率分母含缓存写（业界口径：read / (input+read+write)）
+    const freshTotal = input + read + write, sessionHitRate = freshTotal > 0 ? (read / freshTotal) * 100 : 0
     const model = mid.split("/").pop() ?? mid, hasPricing = inputRate > 0 || cacheReadRate > 0 || cacheWriteRate > 0
     const hasTrendData = prevMsgHitRate >= 0 && lastMsgHitRate >= 0
     const trend = hasTrendData ? lastMsgHitRate - prevMsgHitRate : 0, providerName = pid || ""
@@ -937,8 +895,7 @@ function TokenCachePanel(props: {
     const unsubMsg = props.api.event.on("message.updated", () => { bumpPartVersion(); setRefreshTick(v => v + 1) })
     const unsubSession = props.api.event.on("session.updated", () => { setRefreshTick(v => v + 1) })
     setRefreshTick(v => v + 1)
-    const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
-    onCleanup(() => { clearTimeout(partTimer); clearInterval(balanceTimer); unsubPart(); unsubMsg(); unsubSession() })
+    onCleanup(() => { clearTimeout(partTimer); unsubPart(); unsubMsg(); unsubSession() })
   })
 
   // ── colours ──
@@ -1107,8 +1064,9 @@ function TokenCachePanel(props: {
                 {justify(t().write, fmt(data().write),        t().tok)}
               </text>
             </Show>
+            {/* 未命中 = 新鲜输入 + 缓存写（两者都未从缓存命中） */}
             <text fg={pal().muted}>
-              {justify(t().miss,  fmt(data().freshInput),   t().tok)}
+              {justify(t().miss,  fmt(data().freshInput + data().write), t().tok)}
             </text>
             <text fg={pal().muted}>
               {justify(t().out,   fmt(data().output),       t().tok)}
@@ -1299,7 +1257,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
       : undefined
     let input = session?.tokens?.input ?? 0
     let read = session?.tokens?.cache?.read ?? 0
-    let output = session?.tokens?.output ?? 0
+    let write = session?.tokens?.cache?.write ?? 0
     // 旧 SDK 无 session 聚合字段 → 遍历消息累加（与侧边栏 fallback 一致）
     if (session?.tokens == null) {
       for (const m of msgs) {
@@ -1308,17 +1266,18 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
         if (!tk) continue
         input += num(tk.input)
         read += num(tk.cache?.read)
-        output += num(tk.output)
+        write += num(tk.cache?.write)
       }
     }
     // 从后往前取最后两条有 token 数据的 assistant 消息 → 单条命中率 + 趋势
+    // 分母含缓存写（业界口径：read / (input+read+write)）
     let hitRate = -1, prevHitRate = -1
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i]
       if (m.role !== "assistant") continue
       const tk = (m as AssistantMessage).tokens
       if (!tk) continue
-      const mit = num(tk.input) + num(tk.cache?.read)
+      const mit = num(tk.input) + num(tk.cache?.read) + num(tk.cache?.write)
       const mrt = num(tk.cache?.read)
       if (mit <= 0) continue
       const rate = (mrt / mit) * 100
@@ -1326,46 +1285,10 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
       prevHitRate = rate
       break
     }
-    return { hitRate, prevHitRate, input, read, output }
+    return { hitRate, prevHitRate, input, read, write }
   })
 
-  // ── 余额查询（独立轮询，共享 provider/key 逻辑）──
-  const [balanceState, setBalanceState] = createSignal<BalanceState>({
-    status: "idle", data: null, lastFetch: 0,
-  })
-  let balanceSeq = 0
-
-  const pollBalance = async () => {
-    const provider = getBalanceProvider(props.signals.balanceProviderId())
-    const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
-      || findOpencodeKey(props.api, provider)
-    if (props.signals.balanceUnsupported()) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
-    if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
-    const now = Date.now()
-    const prev = balanceState()
-    if (prev.status === "ok" && prev.key === key && now - prev.lastFetch < BALANCE_POLL_MS) return
-    const seq = ++balanceSeq
-    setBalanceState({ ...prev, status: "loading", error: undefined, key })
-    const controller = new AbortController()
-    let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
-    try {
-      const data = await provider.fetchBalance(key, controller.signal)
-      clearTimeout(timer)
-      if (seq !== balanceSeq) return
-      setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
-    } catch (err) {
-      clearTimeout(timer)
-      if (seq !== balanceSeq) return
-      const code = timedOut ? "TIMEOUT" : (err instanceof Error ? err.message : "")
-      setBalanceState({ status: "error", data: null, lastFetch: 0, error: code, key })
-    }
-  }
-
-  createEffect(() => {
-    void props.signals.balanceRefresh()
-    untrack(() => { void pollBalance() })
-  })
+  // 余额查询状态为共享信号（PanelSignals.balanceState），由 tui() 统一轮询
 
   // 自动切换 provider（跟随当前会话模型；幂等，与侧边栏共享信号）
   createEffect(() => {
@@ -1424,7 +1347,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
   })
 
   const balanceText = createMemo(() => {
-    const s = balanceState()
+    const s = props.signals.balanceState()
     if (s.status === "ok" && s.data) return formatBalanceText(s.data, props.signals.balanceCurrency(), props.signals.exchangeRate())
     if (s.status === "loading") return "\u2026"
     if (s.status === "error") return "\u26a0"
@@ -1459,7 +1382,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
           </Show>
           <span style={{ fg: pal().muted }}>{" \u00b7 " + t().barTok + " "}</span>
           <span style={{ fg: pal().text }}>
-            {stats() ? fmtCompact(stats()!.input + stats()!.read + stats()!.output) : "--"}
+            {stats() ? fmtCompact(stats()!.input + stats()!.read + stats()!.write) : "--"}
           </span>
           <Show when={!props.signals.balanceUnsupported()}>
             <span style={{ fg: pal().muted }}>{" \u00b7 " + t().barBal + " "}</span>
@@ -1519,6 +1442,14 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [langZH, setLangZH] = createSignal(LANG_ZH)
   const [overrideSessionId, setOverrideSessionId] = createSignal<string | undefined>(undefined)
 
+  // ── 余额查询状态（共享）：侧边栏与底部栏读同一份数据，
+  //    避免重复请求导致两处余额不一致 ──
+  const [balanceState, setBalanceState] = createSignal<BalanceState>({
+    status: "idle", data: null, lastFetch: 0,
+  })
+  // 请求序号：防止定时轮询与手动刷新并发时，慢的旧请求覆盖新结果
+  let balanceSeq = 0
+
   const signals: PanelSignals = {
     currencySymbol, setCurrencySymbol,
     exchangeRate, setExchangeRate,
@@ -1533,6 +1464,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     balanceProviderId, setBalanceProviderId,
     autoBalance, setAutoBalance,
     balanceUnsupported, setBalanceUnsupported,
+    balanceState,
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
     overrideSessionId, setOverrideSessionId,
@@ -1572,6 +1504,49 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   // ── slash commands for runtime config ──
   const KV_PREFIX = "cache_panel"
+
+  const pollBalance = async () => {
+    const provider = getBalanceProvider(balanceProviderId())
+    // 手动配置的 key 优先；缺失时自动复用 OpenCode 已认证的 key（auth.json / config）
+    const key = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+      || findOpencodeKey(api, provider)
+    if (balanceUnsupported()) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
+    if (!key) { setBalanceState({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
+    const now = Date.now()
+    const prev = balanceState()
+    // key 已更换（重新输入）→ 强制重新查询，绕过缓存
+    if (prev.status === "ok" && prev.key === key && now - prev.lastFetch < BALANCE_POLL_MS) return // cache still fresh
+    const seq = ++balanceSeq
+    setBalanceState({ ...prev, status: "loading", error: undefined, key })
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
+    try {
+      const data = await provider.fetchBalance(key, controller.signal)
+      clearTimeout(timer)
+      if (seq !== balanceSeq) return // 已被更新的请求取代，丢弃过期结果
+      setBalanceState({ status: "ok", data, lastFetch: Date.now(), error: undefined, key })
+    } catch (err) {
+      clearTimeout(timer)
+      if (seq !== balanceSeq) return
+      const code = timedOut ? "TIMEOUT" : (err instanceof Error ? err.message : "")
+      // 失败时清空旧数据，避免显示过期余额
+      setBalanceState({ status: "error", data: null, lastFetch: 0, error: code, key })
+    }
+  }
+
+  // Re-fetch when the API key is (re)configured via /cache-balance-key.
+  // 注意：pollBalance 内部读写 balanceState 信号，若不做 untrack 包裹，
+  // effect 会追踪 balanceState 的变化并与 pollBalance 的 setBalanceState
+  // 形成无限循环（每次重跑都发起新的 fetch 请求）。
+  createEffect(() => {
+    void balanceRefresh()
+    untrack(() => { void pollBalance() })
+  })
+
+  // 定时轮询（5 分钟）；随插件生命周期清理
+  const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
+  api.lifecycle.onDispose(() => clearInterval(balanceTimer))
 
   /** 菜单中 provider 选项标题：标注 key 来源（手动配置 / OpenCode 自动复用 / 未配置）。 */
   const providerOptionTitle = (p: BalanceProvider, current?: string) => {
