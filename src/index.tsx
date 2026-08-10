@@ -1098,9 +1098,6 @@ function TokenCachePanel(props: {
                 {justify(t("distReason"), fmt(data().dist.reasoning), t("tok"))}
               </text>
             </Show>
-            <text fg={pal().text}>
-              {justify(t("distTotal"), fmt(data().dist.apiInput), t("tok"))}
-            </text>
             </Show>
           </Show>
           </Show>

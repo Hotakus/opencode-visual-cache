@@ -150,7 +150,7 @@ npm install -g opencode-visual-cache@latest
 
 通过 `/cache-section` 切换后即时生效，无需重启。此外，该命令还可以开关面板的**外边框**——关闭后内容会顶格显示，释放额外空间。
 
-> **关于 Token 分布数值**：分布面板中"总计"为**最后一次 API 调用**的精确 token 数（input + 缓存读 + 缓存写），"系统提示"/"用户"/"子代理指令"/"Tool 调用"/"Tool 结果"为**整个会话**各内容类型的字符级 BPE 估算值累计，"推理"与"输出"为整个会话的 API 精确值累计。分项与总计**口径不同**（分项 = 会话累计，总计 = 单次调用），数值**不可直接相加比较**，分项仅用于展示会话内各内容类型的大致构成。此外 OpenCode 运行时注入的系统提示组成部分（环境信息、Skill 目录、工具 Schema 定义等，详见 [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts)、[`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)）不在估算范围内。"输出"已按 OpenCode 口径扣除推理 token。
+> **关于 Token 分布数值**：分布面板中"推理"为 API 返回的**精确值**；"系统提示"/"用户"/"子代理指令"/"Tool 调用"/"Tool 结果"为**估算值**——API 仅返回 token 总量，无法拆分各内容类型，插件按内容类型收集文本后基于字符计数近似估算，数值仅供参考。OpenCode 运行时注入的系统提示内容（环境信息、Skill 目录、工具 Schema 定义等，详见 [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts)、[`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)）不在此估算范围内。
 
 ### 4.4 余额查询
 
