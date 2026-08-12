@@ -10,6 +10,7 @@ import type {
   TuiThemeCurrent,
   TuiDialogStack,
   TuiPromptRef,
+  SequenceBindingLike,
 } from "@opencode-ai/plugin/tui"
 import type { UserMessage, AssistantMessage, Message } from "@opencode-ai/sdk"
 import type {
@@ -19,7 +20,7 @@ import type {
   FilePart,
   ReasoningPart,
 } from "@opencode-ai/sdk/v2"
-import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, untrack } from "solid-js"
+import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, For, untrack } from "solid-js"
 import { PLUGIN_VERSION } from "./_version"
 import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry, type BalanceProvider } from "./balance-providers"
 import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
@@ -404,6 +405,9 @@ interface PanelSignals {
   /** When set, the panel renders stats for this session instead of the main one. */
   overrideSessionId: () => string | undefined
   setOverrideSessionId: (v: string | undefined) => void
+  /** True while our sidebar panel is mounted — host sidebar is visible (occupies 42 cols). */
+  sidebarVisible: () => boolean
+  setSidebarVisible: (v: boolean) => void
 }
 
 const CURRENCIES: Record<string, string> = {
@@ -440,6 +444,12 @@ function TokenCachePanel(props: {
   const [distOpen, setDistOpen] = createSignal(false)
   const [skillsOpen, setSkillsOpen] = createSignal(true)
   let boxEl: any
+
+  // 侧边栏可见性通知：本面板挂载 ⇒ 宿主侧边栏可见（固定占用 42 列输入框宽度）
+  createEffect(() => {
+    props.signals.setSidebarVisible(true)
+    onCleanup(() => props.signals.setSidebarVisible(false))
+  })
 
   // ── shared signals (de-structured so internal code is unchanged) ──
   const {
@@ -1179,6 +1189,33 @@ function TokenCachePanel(props: {
 // ---------------------------------------------------------------------------
 
 /**
+ * 路径截断的固定开销（列数）：仅宿主布局常量，不含任何内容宽度——
+ * 统计宽度、宿主 usage、commands 快捷键均为运行时动态计算。
+ * - marginLeft=1 + space-between 余量 ≈ 2 列
+ */
+const PATH_CHROME = 2
+/**
+ * 路径可用宽度低于此列数时整体隐藏（极窄终端下路径信息价值太低，
+ * 残留的 "E:\Work…" 反而挤压右侧统计与 commands，直接让位更干净）。
+ */
+const HIDE_PATH_BELOW = 14
+
+/**
+ * 从宿主 keymap 动态读取命令的快捷键显示文本（与宿主 Prompt 同源），
+ * 取不到时回退到传入的默认文本。
+ */
+function keyShortcut(api: TuiPluginApi, command: string, fallback: string): string {
+  try {
+    const binds = api.tuiConfig.keybinds.get(command)
+    const seq = binds?.map((b) => ({ key: b.key }))
+    const s = api.keys.formatBindings(seq as unknown as SequenceBindingLike[])
+    return s || fallback
+  } catch {
+    return fallback
+  }
+}
+
+/**
  * 输入框 hint 行（session_prompt slot 的 hint）：单行显示 路径 · 命中率 · 余额 · Tokens。
  * 通过 ui.Prompt 的 hint prop 注入——宿主右侧的 token/commands 提示自动保留，
  * 三合一信息与路径同行显示在中间位置。
@@ -1301,6 +1338,116 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
     try { return props.api.state.path.directory } catch { return "" }
   })
 
+  // 终端宽度信号：初始读取渲染器，窗口 resize 时更新（宿主不约束 hint 行宽度，
+  // 路径截断必须基于终端宽度手动计算）。
+  // CliRenderer 继承的 EventEmitter 因项目未装 @types/node 类型不可见，
+  // 用最小接口声明补齐 resize 事件的 on/off。
+  interface ResizeEmitter {
+    on(event: "resize", cb: () => void): unknown
+    off(event: "resize", cb: () => void): unknown
+  }
+  const [termW, setTermW] = createSignal(props.api.renderer.terminalWidth)
+  // resize 事件（主通道）；事件接口若在插件环境不可用则跳过，由轮询兜底
+  createEffect(() => {
+    const r = props.api.renderer as unknown as ResizeEmitter
+    if (typeof r.on !== "function" || typeof r.off !== "function") return
+    const onResize = () => setTermW(props.api.renderer.terminalWidth)
+    r.on("resize", onResize)
+    onCleanup(() => r.off("resize", onResize))
+  })
+  // 轮询兜底：事件通道若在插件环境不可用，定期同步终端宽度（值不变时不触发更新）
+  createEffect(() => {
+    const timer = setInterval(() => setTermW(props.api.renderer.terminalWidth), 500)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  // 统计部分分段（单一数据源）：量宽拼接 text，渲染逐段着色，避免双源漂移
+  const statsSegs = createMemo<{ text: string; color: string | undefined }[]>(() => {
+    const s = stats()
+    const hr = s && s.hitRate >= 0 ? (Math.floor(s.hitRate * 10) / 10).toFixed(1) + "%" : "--"
+    const segs: { text: string; color: string | undefined }[] = [
+      { text: t("barHit") + " ", color: pal().muted },
+      { text: hr, color: hitColor() },
+    ]
+    const tr = trend()
+    if (tr !== null) {
+      segs.push({ text: " " + (tr > 0 ? "\u2191" : "\u2193") + Math.abs(tr).toFixed(1) + "%", color: tr > 0 ? pal().success : pal().error })
+    }
+    segs.push({ text: " \u00b7 " + t("barTok") + " ", color: pal().muted })
+    segs.push({ text: s ? fmtCompact(s.input + s.read + s.write) : "--", color: pal().text })
+    if (!props.signals.balanceUnsupported()) {
+      segs.push({ text: " \u00b7 " + t("barBal") + " ", color: pal().muted })
+      segs.push({ text: balanceText(), color: pal().text })
+    }
+    segs.push({ text: " \u00b7 ", color: pal().muted })
+    return segs
+  })
+  const statsW = createMemo(() => {
+    let w = 0
+    for (const sg of statsSegs()) w += visualWidth(sg.text)
+    return w
+  })
+
+  // 宿主右侧 usage 文本复刻（1.18.16 Prompt 口径）：
+  // 最后一条 output>0 的 assistant 消息 → tokens 合计格式化 + 模型 context limit 百分比 + session 累计费用
+  const sessionCost = createMemo(() => {
+    try { return num(props.api.state.session.get(sid)?.cost) } catch { return 0 }
+  })
+  const usageText = createMemo(() => {
+    const id = sid
+    if (!id) return ""
+    const msgs = props.api.state.session.messages(id) as Message[]
+    let last: AssistantMessage | undefined
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role !== "assistant") continue
+      const tk = (m as AssistantMessage).tokens
+      if (tk && num(tk.output) > 0) { last = m as AssistantMessage; break }
+    }
+    if (!last) return ""
+    const tk = last.tokens
+    if (!tk) return ""
+    const tokens = num(tk.input) + num(tk.output) + num(tk.reasoning) + num(tk.cache?.read) + num(tk.cache?.write)
+    if (tokens <= 0) return ""
+    let pct = ""
+    try {
+      const p = props.api.state.provider.find((x) => x.id === last.providerID)
+      const limit = p?.models?.[last.modelID]?.limit?.context
+      if (typeof limit === "number" && limit > 0) pct = ` (${Math.round((tokens / limit) * 100)}%)`
+    } catch {}
+    const context = fmtCompact(tokens) + pct
+    const cost = sessionCost()
+    return cost > 0 ? context + " \u00b7 " + fmtCost(cost) : context
+  })
+
+  // 宿主 1513 行右侧文本：usage（有数据）或 "快捷键 agents"（无数据）+ commands，
+  // 快捷键从宿主 keymap 动态读取
+  const rightText = createMemo(() => {
+    const cmds = keyShortcut(props.api, "command.palette.show", "ctrl+p") + " commands"
+    const u = usageText()
+    if (u) return u + " " + cmds
+    return keyShortcut(props.api, "agent.cycle", "") + " agents " + cmds
+  })
+  const rightW = createMemo(() => visualWidth(rightText()))
+
+  // 输入框实际宽度 = 终端宽度 - 侧边栏(可见时 42) - 边距 4
+  // （与宿主 session 布局 contentWidth 口径一致；侧边栏可见性由本面板挂载状态驱动）
+  const inputW = createMemo(() => termW() - (props.signals.sidebarVisible() ? 42 : 0) - 4)
+
+  // 路径可用宽度 = 输入框宽度 - 统计宽度(精确) - 宿主右侧宽度(动态) - 布局开销；
+  // 低于 HIDE_PATH_BELOW 时整体隐藏路径（宽度归零），把空间让给统计与 commands
+  const dirDisplay = createMemo(() => {
+    const avail = inputW() - statsW() - rightW() - PATH_CHROME
+    if (avail < HIDE_PATH_BELOW) return ""
+    return truncateVisual(directory(), avail)
+  })
+  // 状态栏关闭（仅路径）时同样在极窄条件下隐藏路径
+  const dirFallback = createMemo(() => {
+    const avail = inputW() - rightW() - PATH_CHROME
+    if (avail < HIDE_PATH_BELOW) return ""
+    return truncateVisual(directory(), avail)
+  })
+
   // 恢复显隐偏好（默认显示）；关闭时回退为仅显示路径，与宿主默认 hint 行一致
   onMount(() => {
     try {
@@ -1310,28 +1457,18 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
   })
 
   return (
-    <Show when={props.signals.sectionBottom()} fallback={<text fg={pal().muted}>{directory()}</text>}>
+    <Show
+      when={props.signals.sectionBottom()}
+      fallback={<text fg={pal().muted}>{dirFallback()}</text>}
+    >
       <box marginLeft={1} flexGrow={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
-        <text fg={pal().muted}>{directory()}</text>
-      <box flexDirection="row">
+        <text fg={pal().muted}>{dirDisplay()}</text>
+        <box flexDirection="row">
         <text>
-          <span style={{ fg: pal().muted }}>{t("barHit")} </span>
-          <span style={{ fg: hitColor() }}>{(stats()?.hitRate ?? -1) >= 0 ? (Math.floor(stats()!.hitRate * 10) / 10).toFixed(1) + "%" : "--"}</span>
-          <Show when={trend() !== null}>
-            <span style={{ fg: trend()! > 0 ? pal().success : pal().error }}>
-              {" " + (trend()! > 0 ? "\u2191" : "\u2193") + Math.abs(trend()!).toFixed(1) + "%"}
-            </span>
-          </Show>
-          <span style={{ fg: pal().muted }}>{" \u00b7 " + t("barTok") + " "}</span>
-          <span style={{ fg: pal().text }}>
-            {stats() ? fmtCompact(stats()!.input + stats()!.read + stats()!.write) : "--"}
-          </span>
-          <Show when={!props.signals.balanceUnsupported()}>
-            <span style={{ fg: pal().muted }}>{" \u00b7 " + t("barBal") + " "}</span>
-            <span style={{ fg: pal().text }}>{balanceText()}</span>
-          </Show>
+          <For each={statsSegs()}>
+            {(sg) => <span style={{ fg: sg.color }}>{sg.text}</span>}
+          </For>
         </text>
-        <text fg={pal().muted}>{" \u00b7 "}</text>
         </box>
       </box>
     </Show>
@@ -1383,6 +1520,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const [borderVisible, setBorderVisible] = createSignal(true)
   const [langCode, setLangCode] = createSignal<LangCode>(INIT_LANG)
   const [overrideSessionId, setOverrideSessionId] = createSignal<string | undefined>(undefined)
+  // 侧边栏可见性（由 TokenCachePanel 挂载状态驱动）：可见时宿主输入框宽度 = 终端宽 - 42 - 4
+  const [sidebarVisible, setSidebarVisible] = createSignal(false)
 
   // ── 余额查询状态（共享）：侧边栏与底部栏读同一份数据，
   //    避免重复请求导致两处余额不一致 ──
@@ -1410,6 +1549,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     balanceCurrency, setBalanceCurrency,
     borderVisible, setBorderVisible,
     overrideSessionId, setOverrideSessionId,
+    sidebarVisible, setSidebarVisible,
   }
 
   api.slots.register(createSidebarSlot(api, signals))
