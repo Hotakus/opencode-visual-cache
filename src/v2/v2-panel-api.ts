@@ -118,8 +118,10 @@ export function createPanelApi(context: Context): PanelApi {
       },
       // V2 Provider.Info 无 models——从独立模型列表组装 V1 形状（{ id, models: { [modelID]: { cost } } }）。
       // Model.Info.cost 是数组（tier 分段定价），取第一档近似（无 tier 匹配信息）。
-      provider: (() => {
-        const models = (context.data.location.model?.list() ?? []) as Array<Record<string, any>>
+      // 响应式 getter：每次访问实时组装（对齐官方 dialog-model 的 data.location.model.list(location.ref) 用法，
+      // location 数据为 Solid store——组件 effect 中读取自动建立依赖，数据同步后重算）。
+      get provider() {
+        const models = (context.data.location.model?.list(context.location) ?? []) as Array<Record<string, any>>
         const byProvider = new Map<string, { id: string; models: Record<string, { cost: Record<string, any> }> }>()
         for (const m of models) {
           const pid = String(m.providerID ?? "")
@@ -138,7 +140,7 @@ export function createPanelApi(context: Context): PanelApi {
           byProvider.set(pid, entry)
         }
         return [...byProvider.values()]
-      })(),
+      },
       config: {} as any, // V2 插件 API 无 config 读取；实验兜底
       part(messageID: string): readonly any[] {
         // V2 无 part API：从消息 content 构造 V1 Part 形状（token 分布/技能区块依赖）。
