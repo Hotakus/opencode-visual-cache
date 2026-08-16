@@ -97,6 +97,13 @@ export interface KeymapCommand {
   readonly group?: string
   readonly palette?: true
   readonly slash?: { readonly name: string; readonly aliases?: string[]; readonly arguments?: true }
+  /** 旧字段（opencode-dcp 兼容写法：palette 可见性 + slash 补全依赖它们） */
+  readonly namespace?: string
+  readonly name?: string
+  readonly desc?: string
+  readonly category?: string
+  readonly slashName?: string
+  readonly slashAliases?: string[]
   readonly run: (input?: string) => void | false | Promise<void>
 }
 

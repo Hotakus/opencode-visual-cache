@@ -4,9 +4,10 @@ import { createSignal } from "solid-js"
 import type { Context, PluginModule } from "./types"
 import { createPanelApi } from "./v2-panel-api"
 import { TokenCachePanel } from "../panel/TokenCachePanel"
-import type { BalanceState, PanelSignals } from "../panel/panel-api"
+import type { BalanceState, PanelApi, PanelSignals } from "../panel/panel-api"
 import type { TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 import { StatusView } from "./status"
+import { makeCommands } from "./commands"
 
 /** V2 theme → V1 形状映射（组件按 primary/text/textMuted/… 字段消费） */
 function mapTheme(theme: Context["theme"]): TuiThemeCurrent {
@@ -63,22 +64,40 @@ function createPanelSignals(): PanelSignals {
   }
 }
 
+/** 面板根组件：在组件渲染上下文注册命令 layer（keymap.layer 必须由组件调用），
+ *  再渲染共享 TokenCachePanel。 */
+function PluginRoot(props: {
+  context: Context
+  api: PanelApi
+  signals: PanelSignals
+  sessionID: string
+}) {
+  props.context.keymap.layer(() => ({
+    mode: "base",
+    enabled: true,
+    commands: makeCommands(props.context, props.api, props.signals),
+  }))
+  return (
+    <TokenCachePanel
+      theme={mapTheme(props.context.theme)}
+      api={props.api}
+      sessionId={props.sessionID}
+      signals={props.signals}
+    />
+  )
+}
+
 const mod: PluginModule = {
   id: "opencode-visual-cache",
   setup(context: Context) {
     const api = createPanelApi(context)
     const signals = createPanelSignals()
 
-    // 侧边栏完整面板（与 V1 同一组件）
+    // 侧边栏完整面板（与 V1 同一组件；命令 layer 在组件内注册）
     context.ui.slot({
       append: "sidebar.content",
       render: (props) => (
-        <TokenCachePanel
-          theme={mapTheme(context.theme)}
-          api={api}
-          sessionId={String(props.sessionID ?? "")}
-          signals={signals}
-        />
+        <PluginRoot context={context} api={api} signals={signals} sessionID={String(props.sessionID ?? "")} />
       ),
     })
 

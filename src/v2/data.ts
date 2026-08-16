@@ -67,4 +67,46 @@ export function inputTotal(stats: SessionStats): number {
   return stats.input + stats.cacheRead + stats.cacheWrite
 }
 
+/** 单条命中率（V1 底部栏口径）：最后一条有 token 的 assistant 消息，
+ *  分母含缓存写 read/(input+read+write)；prevHitRate 为上一条（趋势用）。 */
+export function collectLastHitRate(context: Context, sessionID: string): {
+  hitRate: number
+  prevHitRate: number
+  input: number
+  read: number
+  write: number
+} {
+  const msgs = context.data.session.message.list(sessionID) ?? []
+  const session = context.data.session.get(sessionID) as { tokens?: { input?: number; cache?: { read?: number; write?: number } } } | undefined
+  let input = num(session?.tokens?.input)
+  let read = num(session?.tokens?.cache?.read)
+  let write = num(session?.tokens?.cache?.write)
+  // 无 session 聚合字段 → 遍历消息累加（与 V1 fallback 一致）
+  if (session?.tokens == null) {
+    for (const m of msgs) {
+      if (m.type !== "assistant") continue
+      const t = m.tokens
+      if (!t) continue
+      input += num(t.input)
+      read += num(t.cache?.read)
+      write += num(t.cache?.write)
+    }
+  }
+  let hitRate = -1, prevHitRate = -1
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.type !== "assistant") continue
+    const tk = m.tokens
+    if (!tk) continue
+    const mit = num(tk.input) + num(tk.cache?.read) + num(tk.cache?.write)
+    const mrt = num(tk.cache?.read)
+    if (mit <= 0) continue
+    const rate = (mrt / mit) * 100
+    if (hitRate < 0) { hitRate = rate; continue }
+    prevHitRate = rate
+    break
+  }
+  return { hitRate, prevHitRate, input, read, write }
+}
+
 export type { MessageInfo }
