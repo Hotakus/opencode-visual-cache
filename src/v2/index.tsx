@@ -9,17 +9,24 @@ import { StatusView } from "./status"
 import { mapTheme } from "./theme"
 import { makeCommands, findOpencodeKeyV2 } from "./commands"
 import { getBalanceProvider } from "../balance-providers"
-import { LANG_META, type LangCode } from "../i18n"
+import { LANG_META, detectLang, type LangCode } from "../i18n"
 
 const KV_PREFIX = "cache_panel"
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes（对齐 V1）
+
+// 环境变量覆盖 + 自动检测（对齐 V1：CACHE_TUI_LANG 优先，其次系统 locale）
+declare const process: { env: Record<string, string | undefined> } | undefined
+const DEBUG_LANG = typeof process !== "undefined" ? process.env?.CACHE_TUI_LANG : undefined
+const INIT_LANG: LangCode = DEBUG_LANG !== undefined && LANG_META.some((m) => m.code === DEBUG_LANG)
+  ? (DEBUG_LANG as LangCode)
+  : detectLang()
 
 /** V2 侧创建面板信号（实验：默认值；偏好持久化经 PanelApi.kv → storage.store）。
  *  返回 PanelSignals + setBalanceState：余额轮询由 PluginRoot 驱动（V1 同构）。 */
 function createPanelSignals(): PanelSignals & { setBalanceState: (v: BalanceState) => void } {
   const [currencySymbol, setCurrencySymbol] = createSignal("$")
   const [exchangeRate, setExchangeRate] = createSignal(1)
-  const [langCode, setLangCode] = createSignal("en")
+  const [langCode, setLangCode] = createSignal(INIT_LANG)
   const [sectionDetail, setSectionDetail] = createSignal(true)
   const [sectionModel, setSectionModel] = createSignal(true)
   const [sectionDist, setSectionDist] = createSignal(true)
@@ -122,6 +129,19 @@ function PluginRoot(props: {
   // 定时轮询（5 分钟）；随插件生命周期清理
   const balanceTimer = setInterval(pollBalance, BALANCE_POLL_MS)
   onCleanup(() => clearInterval(balanceTimer))
+
+  // auto-clear override：用户导航到不同主会话时清除子代理视图（对齐 V1 createSidebarSlot）
+  let lastSlotSid = props.sessionID
+  createEffect(() => {
+    const sid = props.sessionID
+    if (sid !== lastSlotSid) {
+      lastSlotSid = sid
+      if (props.signals.overrideSessionId()) {
+        props.signals.setOverrideSessionId(undefined)
+        void props.api.kv.set(`${KV_PREFIX}.session`, "")
+      }
+    }
+  })
 
   return (
     <TokenCachePanel
