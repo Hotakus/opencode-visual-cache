@@ -20,3 +20,14 @@ await esbuild.build({
   external: ["@opencode-ai/*", "@opentui/*", "solid-js"],
   plugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
 })
+
+// V2 (opencode2) 入口：{ id, setup } 协议，独立产物
+await esbuild.build({
+  entryPoints: ["src/v2/index.tsx"],
+  outfile: "dist/v2.js",
+  format: "esm",
+  platform: "node",
+  bundle: true,
+  external: ["@opencode-ai/*", "@opentui/*", "solid-js"],
+  plugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
+})
