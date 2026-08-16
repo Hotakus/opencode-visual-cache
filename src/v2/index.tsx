@@ -72,9 +72,9 @@ function PluginRoot(props: {
   signals: PanelSignals
   sessionID: string
 }) {
+  // 对齐官方内置插件示例（feature-plugins/system/plugins.tsx）：mode 用 global
   props.context.keymap.layer(() => ({
-    mode: "base",
-    enabled: true,
+    mode: "global",
     commands: makeCommands(props.context, props.api, props.signals),
   }))
   return (

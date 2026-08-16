@@ -122,7 +122,18 @@ export interface Context {
     }
     readonly dialog: {
       prompt(options: { readonly title: string; readonly message?: string }): Promise<string | undefined>
-      select<Value>(options: { readonly title: string; readonly options: readonly { label: string; value: Value }[] }): Promise<Value | undefined>
+      select<Value>(options: {
+        readonly title: string
+        readonly placeholder?: string
+        readonly options: readonly {
+          readonly title: string
+          readonly value: Value
+          readonly description?: string
+          readonly category?: string
+          readonly disabled?: boolean
+        }[]
+        readonly current?: Value
+      }): Promise<Value | undefined>
     }
   }
   readonly keymap: {

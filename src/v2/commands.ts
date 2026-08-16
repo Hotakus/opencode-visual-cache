@@ -42,14 +42,14 @@ slash: { name: "cache-currency" },
 run: async () => {
   const opt = await context.ui.dialog.select<{ code: string; symbol: string; rate: number }>({
     title: "Currency",
-    options: [
-      { label: "USD $", value: { code: "USD", symbol: "$", rate: 1 } },
-      { label: "CNY ¥", value: { code: "CNY", symbol: "¥", rate: 7.2 } },
-      { label: "EUR €", value: { code: "EUR", symbol: "€", rate: 0.92 } },
-      { label: "JPY JP¥", value: { code: "JPY", symbol: "JP¥", rate: 150 } },
-      { label: "GBP £", value: { code: "GBP", symbol: "£", rate: 0.79 } },
-      { label: "KRW ₩", value: { code: "KRW", symbol: "₩", rate: 1350 } },
-    ],
+          options: [
+            { title: "USD $", value: { code: "USD", symbol: "$", rate: 1 } },
+            { title: "CNY ¥", value: { code: "CNY", symbol: "¥", rate: 7.2 } },
+            { title: "EUR €", value: { code: "EUR", symbol: "€", rate: 0.92 } },
+            { title: "JPY JP¥", value: { code: "JPY", symbol: "JP¥", rate: 150 } },
+            { title: "GBP £", value: { code: "GBP", symbol: "£", rate: 0.79 } },
+            { title: "KRW ₩", value: { code: "KRW", symbol: "₩", rate: 1350 } },
+          ],
   })
   if (!opt) return
   signals.setCurrencySymbol(opt.symbol)
@@ -94,8 +94,8 @@ run: async () => {
   const opt = await context.ui.dialog.select<"en" | "zh">({
     title: "Language",
     options: [
-      { label: "English", value: "en" },
-      { label: "中文", value: "zh" },
+      { title: "English", value: "en" },
+      { title: "中文", value: "zh" },
     ],
   })
   if (!opt) return

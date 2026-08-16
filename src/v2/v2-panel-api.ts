@@ -10,8 +10,15 @@ export function createPanelApi(context: Context): PanelApi {
   // storage.store 持久化 → PanelApi.kv 语义
   const kvStore = new Map<string, [Record<string, any>, (fn: (d: Record<string, any>) => void) => Promise<void>]>()
   const kvGet = <T>(key: string, fallback?: T): T | undefined => {
-    const entry = kvStore.get(key)
-    if (!entry) return fallback
+    let entry = kvStore.get(key)
+    if (!entry) {
+      // 首次访问：创建 storage.store（V2 恢复磁盘持久化值），避免设置重启丢失
+      const created = context.storage.store<Record<string, any>>(`opencode-visual-cache.${key}`, {
+        initial: { value: fallback },
+      })
+      entry = created as [Record<string, any>, (fn: (d: Record<string, any>) => void) => Promise<void>]
+      kvStore.set(key, entry)
+    }
     const v = entry[0].value
     return v === undefined ? fallback : (v as T)
   }
