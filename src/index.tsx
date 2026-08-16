@@ -24,6 +24,14 @@ import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, For, 
 import { PLUGIN_VERSION } from "./_version"
 import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry, type BalanceProvider } from "./balance-providers"
 import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
+import {
+  MAX_SAT, FALLBACK, CURRENCIES, DEFAULT_RATES,
+  charColumns, visualWidth, visualPadEnd, truncateVisual, progressBar,
+  fmt, num, fmtCost, fmtCompact, formatBalanceAmount, formatBalanceText,
+  balanceSymbol, convertBalance, estimateTokens,
+  rgb, saturation, desaturateTo, dimColor,
+  type TokenDist,
+} from "./core"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -31,51 +39,6 @@ import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
 
 // Bun / Node globals — available at runtime in the OpenCode TUI process
 declare const process: { env: Record<string, string | undefined> } | undefined
-
-// ── terminal-width helpers ────────────────────────────────────────
-// CJK characters occupy 2 terminal columns; padEnd/padStart count
-// string length (=1 per char), which breaks alignment with mixed text.
-
-function charColumns(c: string): number {
-  const code = c.codePointAt(0) ?? 0
-  if (code < 0x20) return 0                              // control
-  if (code < 0x7F) return 1                              // ASCII
-  if (code < 0xA0) return 0                              // C1 controls
-  // East-Asian wide / fullwidth ranges
-  if ((code >= 0x1100 && code <= 0x115F) ||              // Hangul Jamo
-      (code >= 0x2E80 && code <= 0xA4CF) ||              // CJK Radicals … Yi
-      (code >= 0xAC00 && code <= 0xD7A3) ||              // Hangul
-      (code >= 0xF900 && code <= 0xFAFF) ||              // CJK Compat
-      (code >= 0xFE10 && code <= 0xFE6F) ||              // Vertical / Compat
-      (code >= 0xFF01 && code <= 0xFF60) ||              // Fullwidth
-      (code >= 0xFFE0 && code <= 0xFFE6) ||              // Fullwidth signs
-      (code >= 0x1F300 && code <= 0x1F64F) ||            // Misc Symbols (emoji)
-      (code >= 0x20000 && code <= 0x3FFFD))              // SIP / TIP
-    return 2
-  return 1
-}
-
-function visualWidth(s: string): number {
-  let w = 0; for (const c of s) w += charColumns(c); return w
-}
-
-function visualPadEnd(s: string, cols: number): string {
-  const pad = cols - visualWidth(s)
-  return pad > 0 ? s + " ".repeat(pad) : s
-}
-
-/** Truncate `s` to fit within `maxCols` visual columns, appending "…" when cut. */
-function truncateVisual(s: string, maxCols: number): string {
-  if (visualWidth(s) <= maxCols) return s
-  let result = "", w = 0
-  for (const c of s) {
-    const cw = charColumns(c)
-    if (w + cw > maxCols - 1) { result += "\u2026"; break }
-    result += c; w += cw
-  }
-  return result
-}
-
 // ── language ──────────────────────────────────────────────────────
 // 语言初始化：环境变量 CACHE_TUI_LANG 覆盖 → 否则按系统 locale 自动检测。
 // 用户通过 /cache-lang 设置的偏好会在 KV 就绪后优先覆盖（见 tui() 内恢复逻辑）。
@@ -84,192 +47,6 @@ const DEBUG_LANG = typeof process !== "undefined" ? process.env?.CACHE_TUI_LANG 
 const INIT_LANG: LangCode = DEBUG_LANG !== undefined && LANG_META.some((m) => m.code === DEBUG_LANG)
   ? (DEBUG_LANG as LangCode)
   : detectLang()
-
-// ── color helpers ────────────────────────────────────────────────
-
-/** Extract { r, g, b } (0–255) from a hex string or RGBA-like object. */
-function rgb(raw: unknown): { r: number; g: number; b: number } | null {
-  if (typeof raw === "string" && raw.startsWith("#")) {
-    const h = raw.slice(1)
-    return {
-      r: parseInt(h.slice(0, 2), 16),
-      g: parseInt(h.slice(2, 4), 16),
-      b: parseInt(h.slice(4, 6), 16),
-    }
-  }
-  if (raw && typeof raw === "object") {
-    const o = raw as Record<string, unknown>
-    if (typeof o.r === "number" && typeof o.g === "number" && typeof o.b === "number") {
-      // RGBA channels may be 0-1 floats; detect and upscale.
-      const scale = o.r > 1 || o.g > 1 || o.b > 1 ? 1 : 255
-      return {
-        r: Math.round(o.r * scale),
-        g: Math.round(o.g * scale),
-        b: Math.round(o.b * scale),
-      }
-    }
-  }
-  return null
-}
-
-/** HSL saturation of an RGB color (0–1). */
-function saturation(r: number, g: number, b: number): number {
-  const max = Math.max(r, g, b) / 255
-  const min = Math.min(r, g, b) / 255
-  const delta = max - min
-  if (delta === 0) return 0
-  const L = (max + min) / 2
-  return L <= 0.5 ? delta / (max + min) : delta / (2 - max - min)
-}
-
-/**
- * If the colour's saturation exceeds `maxSat`, pull it toward grey
- * until saturation drops to maxSat.  Returns a hex string.
- */
-function desaturateTo(raw: unknown, maxSat: number, fallback: string): string {
-  const c = rgb(raw)
-  if (!c) return fallback
-  const sat = saturation(c.r, c.g, c.b)
-  if (sat <= maxSat) {
-    // already muted — return as hex
-    return "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("")
-  }
-  /**
-   * Binary search for the optimal grey-mix ratio α (0…1).
-   *
-   * 12 iterations → 1/2^12 ≈ 1/4096 resolution.  The downstream RGB
-   * channels are only 0–255 (8 bit), so 8 iterations (1/256) would
-   * technically suffice; 12 is intentionally over-budget — the extra
-   * precision costs almost nothing and guarantees the saturation probe
-   * converges to within a fraction of an 8‑bit step, eliminating
-   * colour banding in edge cases.
-   */
-  // Bt.601 luma (perceptual brightness used as the grey anchor)
-  const luma = c.r * 0.299 + c.g * 0.587 + c.b * 0.114
-  let lo = 0, hi = 1
-  for (let i = 0; i < 12; i++) {
-    const mid = (lo + hi) / 2
-    const nr = Math.round(c.r + (luma - c.r) * mid)
-    const ng = Math.round(c.g + (luma - c.g) * mid)
-    const nb = Math.round(c.b + (luma - c.b) * mid)
-    if (saturation(nr, ng, nb) > maxSat) lo = mid
-    else hi = mid
-  }
-  const nr = Math.round(c.r + (luma - c.r) * hi)
-  const ng = Math.round(c.g + (luma - c.g) * hi)
-  const nb = Math.round(c.b + (luma - c.b) * hi)
-  return "#" + [nr, ng, nb].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
-}
-
-/** Darken a hex colour by multiplying each channel by `factor` (0–1). */
-function dimColor(hex: string, factor = 0.5): string {
-  const c = rgb(hex)
-  if (!c) return hex
-  const r = Math.round(c.r * factor)
-  const g = Math.round(c.g * factor)
-  const b = Math.round(c.b * factor)
-  return "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
-}
-
-// Morandi fallbacks — used when a theme colour cannot be resolved
-const FALLBACK = {
-  primary: "#8B9DAF",
-  text:    "#C5C5BB",
-  muted:   "#7A7A72",
-  success: "#9CAF8B",
-  warning: "#C5B88D",
-  error:   "#B08A8A",
-  border:  "#6B6B63",
-} as const
-
-/**
- * Desaturation ceiling for the Morandi-style palette.
- *
- * Morandi colours float around 0.15–0.30 saturation in HSL space.
- * 0.28 sits near the upper end of that range: it strips the aggressive
- * punch from high-saturation themes (Dracula, Solarized …) while
- * preserving enough colour identity that green / orange / red hit-rate
- * coding stays distinguishable.
- *
- * Lower → more grey, harder to tell colours apart.
- * Higher → bright themes bleed through and defeat the muted look.
- */
-const MAX_SAT = 0.28
-
-function progressBar(percent: number, width: number): string {
-  const clamped = Math.max(0, Math.min(100, percent))
-  const filled = Math.round((clamped / 100) * width)
-  const empty = Math.max(0, width - filled)
-  return "\u2588".repeat(filled) + "\u2591".repeat(empty)
-}
-
-function fmt(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M"
-  if (n >= 10_000) return (n / 1_000).toFixed(1) + "K"
-  return n.toLocaleString("en-US")
-}
-
-function num(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0
-}
-
-function fmtCost(n: number, symbol = "$", rate = 1): string {
-  const v = n * rate
-  if (v >= 1) return symbol + v.toFixed(2)
-  if (v >= 0.01) return symbol + v.toFixed(3)
-  return symbol + v.toFixed(4)
-}
-
-// ── token estimation ──
-// Character-based BPE approximation.  Default ratios (~4 ASCII or ~1.5 CJK
-// chars per token) work well for natural language but systematically
-// under-count tokens in JSON and source code where every punctuation mark
-// tends to be its own token.  Detect these cases and tighten the ratio.
-// See: GPT-4 / Claude tokenizer behaviour with structured text.
-
-function estimateTokens(text: string): number {
-  if (!text || text.length === 0) return 0
-  let ascii = 0
-  let cjk = 0
-  for (const c of text) {
-    const code = c.codePointAt(0) ?? 0
-    if (code >= 0x4E00 && code <= 0x9FFF) cjk++       // CJK Unified
-    else if (code >= 0x3040 && code <= 0x30FF) cjk++   // Hiragana/Katakana
-    else if (code >= 0xAC00 && code <= 0xD7A3) cjk++   // Hangul
-    else if (code >= 0x1100 && code <= 0x11FF) cjk++   // Hangul Jamo
-    else if (code >= 0x2E80 && code <= 0x2EFF) cjk++   // CJK Radicals
-    else ascii++
-  }
-
-  // Real BPE tokenizers (cl100k_base, o200k_base) average ~3.5-4.0
-  // ASCII chars/token for both JSON and source code — close to prose.
-  // The old 2.0 / 2.5 ratios matched minified-JS extremes, not typical
-  // payloads, and systematically over-estimated token counts.
-  const trimmed = text.trimStart()
-  // Strip markdown code-fence prefix so that ```json … is detected as JSON
-  const strippedFence = trimmed.replace(/^\x60{3}\w*\s*\n?/, "")
-  const jsonLike = (strippedFence.startsWith("{") || strippedFence.startsWith("["))
-    && /"[^"]+"\s*:/.test(text)
-  const codeLike = !jsonLike
-    && /```|^import |^export |^function |^const |^let |^var |^class |^interface |^type |^def |^fn |^pub |^use |^mod |^package /m.test(text)
-
-  const asciiPerToken = jsonLike ? 3.5 : codeLike ? 3.5 : 4
-  return Math.max(1, Math.ceil(ascii / asciiPerToken + cjk / 1.0))
-}
-
-interface TokenDist {
-  system: number   // UserMessage.system
-  user: number     // user message text/file parts
-  agent: number    // task tool input prompt/description (sub-agent delegation)
-  toolCall: number // ToolPart.input (actual tool params)
-  toolResult: number // ToolPart completed output / error
-  output: number   // AssistantMessage.tokens.output (API exact, reasoning excluded)
-  reasoning: number // AssistantMessage.tokens.reasoning (API exact)
-  apiOutput: number // StepFinishPart.tokens.output (API exact, preferred)
-  apiInput: number  // API exact total input context (input + cache read + cache write)
-  stepCost: number  // last step-finish part cost (USD) in the current round
-  stepCount: number // step-finish parts count across the current round (parentID chain)
-}
 
 // ---------------------------------------------------------------------------
 // Balance state
@@ -284,17 +61,6 @@ interface BalanceState {
 }
 
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
-
-/**
- * 将余额从来源币种换算为目标币种。
- * DEFAULT_RATES 以 USD=1 为基准：先折算为 USD，再换算到目标币种。
- */
-function convertBalance(target: string, targetRate: number, amount: number, from: string): number {
-  if (from === target) return amount
-  const fromRate = DEFAULT_RATES[from] ?? 1
-  const usd = from === "USD" ? amount : amount / fromRate
-  return target === "USD" ? usd : usd * targetRate
-}
 
 /**
  * 从 OpenCode 已认证的 provider 读取 API key 作为余额查询的自动兜底。
@@ -315,45 +81,6 @@ function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
   } catch {
     return ""
   }
-}
-
-/** 货币符号：优先取 /cache-currency 内置映射，未知币种回退为代码。 */
-function balanceSymbol(currency: string): string {
-  const sym = CURRENCIES[currency]
-  return sym ?? currency + " "
-}
-
-/** 紧凑数字缩写（底部状态栏用）：1234 → "1.2K"，1234567 → "1.2M"。 */
-function fmtCompact(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M"
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K"
-  return String(Math.round(n))
-}
-
-/** 余额数值格式化：≥1 或 0 显示固定 2 位小数；小额（<1）保留精度（最多 6 位），避免抹成 0.00。 */
-function formatBalanceAmount(total: string): string {
-  const n = parseFloat(total)
-  if (!Number.isFinite(n)) return total
-  if (n === 0 || n >= 1) return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return n.toLocaleString("en-US", { maximumFractionDigits: 6 })
-}
-
-/**
- * 将余额列表格式化为单行文本。
- * 优先直接显示偏好币种（CNY/USD…）；偏好币种为换算币种时按汇率折算第一条余额。
- */
-function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): string {
-  const native = pref ? list.find((x) => x.currency === pref) : undefined
-  if (native) return balanceSymbol(native.currency) + formatBalanceAmount(native.total)
-  const base = list[0]
-  const baseAmt = parseFloat(base.total)
-  const converted = Number.isFinite(baseAmt)
-    ? convertBalance(pref || base.currency, rate, baseAmt, base.currency)
-    : baseAmt
-  const shown = pref && base.currency !== pref
-    ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
-    : formatBalanceAmount(base.total)
-  return balanceSymbol(pref || base.currency) + shown
 }
 
 // ---------------------------------------------------------------------------
@@ -408,15 +135,6 @@ interface PanelSignals {
   /** True while our sidebar panel is mounted — host sidebar is visible (occupies 42 cols). */
   sidebarVisible: () => boolean
   setSidebarVisible: (v: boolean) => void
-}
-
-const CURRENCIES: Record<string, string> = {
-  USD: "$", CNY: "¥", EUR: "€", JPY: "JP¥", GBP: "£", KRW: "₩",
-}
-/** Approximate USD exchange rates — used as defaults when switching currency.
- *  Users can override via /cache-rate.  Last updated 2026-05. */
-const DEFAULT_RATES: Record<string, number> = {
-  USD: 1, CNY: 7.2, EUR: 0.92, JPY: 150, GBP: 0.79, KRW: 1350,
 }
 
 const MIN_PANEL_WIDTH = 20
