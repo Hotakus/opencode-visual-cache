@@ -10,6 +10,13 @@ export interface App {
 }
 
 export interface Theme {
+  readonly hue: {
+    /** V1 primary 的 V2 等价（v1-migrate.ts：interactive = hues.byToken.primary）。
+     *  取 300：更亮（暗背景下 400/500 偏深）。 */
+    readonly interactive: { readonly 300: string }
+    /** 主题强调色别名。 */
+    readonly accent: { readonly 500: string }
+  }
   readonly text: {
     readonly default: string
     readonly subdued: string
@@ -121,7 +128,7 @@ export interface Context {
       show(options: { readonly message: string; readonly title?: string; readonly variant?: string }): void
     }
     readonly dialog: {
-      prompt(options: { readonly title: string; readonly message?: string }): Promise<string | undefined>
+      prompt(options: { readonly title: string; readonly message?: string; readonly placeholder?: string }): Promise<string | undefined>
       select<Value>(options: {
         readonly title: string
         readonly placeholder?: string
@@ -134,6 +141,10 @@ export interface Context {
         }[]
         readonly current?: Value
       }): Promise<Value | undefined>
+    }
+    /** 当前路由：命令需要当前会话 ID（V2 Route = { type: "session", sessionID }）。 */
+    readonly router: {
+      current(): { readonly type?: string; readonly sessionID?: string; readonly params?: Record<string, unknown> }
     }
   }
   readonly keymap: {
