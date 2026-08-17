@@ -10,7 +10,7 @@
       "types": "./dist/server.d.ts"
     },
     "./tui": {
-      "import": "./dist/tui.js",
+      "import": "./tui/index.js",
       "config": {
         "enabled": true
       }
@@ -22,6 +22,7 @@
   "files": [
     "dist",
     "src",
+    "tui",
     "install.mjs",
     "README.md",
     "README_EN.md"
