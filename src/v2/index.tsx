@@ -153,7 +153,7 @@ function PluginRoot(props: {
   )
 }
 
-const mod: PluginModule = {
+const mod: PluginModule & { server: () => Promise<Record<string, never>> } = {
   id: "opencode-visual-cache",
   setup(context: Context) {
     const api = createPanelApi(context)
@@ -179,6 +179,9 @@ const mod: PluginModule = {
     // 偏好持久化（实验：storage.store 用法验证）
     context.storage.store("opencode-visual-cache.panel", { initial: { collapsed: false } })
   },
+  // V1 server 空实现（兼容标记）：参考 oh-my-opencode-slim 的 { id, server, setup }——
+  // v2 加载 setup，但 V1 检测需要 server 字段识别为插件
+  server: async () => ({}),
 }
 
 export default mod
