@@ -1578,6 +1578,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
             onSubmit={input.on_submit}
             ref={input.ref}
             hint={<BottomStatusBar api={api} signals={signals} sessionId={input.session_id} />}
+            // 接管 session_prompt 后需透传宿主的 session_prompt_right 插槽，
+            // 否则 oc-tps 等依赖该插槽的插件无法显示；无注册时 Slot 为 null。
+            right={<api.ui.Slot name="session_prompt_right" session_id={input.session_id} />}
           />
         )
       },
