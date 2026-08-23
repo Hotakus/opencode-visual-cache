@@ -6,6 +6,15 @@
 export interface BalanceEntry {
   currency: string   // 原生币种（CNY/USD…），复用现有汇率换算
   total: string      // 余额字符串
+  display?: string   // 非货币额度的预格式化显示文本
+  details?: BalanceDetail[]
+}
+
+export type BalanceDetailKey = "plan" | "used" | "remaining" | "window" | "reset" | "codeReview" | "credits" | "resetCredits"
+
+export interface BalanceDetail {
+  key: BalanceDetailKey
+  value: string
 }
 
 /** provider 统一错误：message 即错误码（401/403/EMPTY/…），显示层直接展示。 */
@@ -149,8 +158,100 @@ const hyperProvider: BalanceProvider = {
   },
 }
 
+function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
+  try {
+    const encoded = token.split(".")[1]
+    if (!encoded || typeof atob !== "function") return undefined
+    const binary = atob(encoded.replace(/-/g, "+").replace(/_/g, "/"))
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+    return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
+function getChatGPTAccountId(token: string): string | undefined {
+  const payload = decodeJwtPayload(token)
+  const auth = payload?.["https://api.openai.com/auth"]
+  if (auth && typeof auth === "object") {
+    const accountId = (auth as Record<string, unknown>).chatgpt_account_id
+    if (typeof accountId === "string" && accountId) return accountId
+  }
+  const accountId = payload?.chatgpt_account_id
+  return typeof accountId === "string" && accountId ? accountId : undefined
+}
+
+const openaiProvider: BalanceProvider = {
+  id: "openai",
+  name: "OpenAI Codex",
+  keyPlaceholder: "OAuth access token (eyJ...)",
+  async fetchBalance(accessToken, signal) {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      Referer: "https://chatgpt.com/",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
+      "OpenAI-Beta": "codex-1",
+      "oai-language": "zh-CN",
+      originator: "Codex Desktop",
+    }
+    const accountId = getChatGPTAccountId(accessToken)
+    if (accountId) headers["ChatGPT-Account-Id"] = accountId
+
+    const res = await fetch("https://chatgpt.com/backend-api/wham/usage", { headers, signal })
+    if (!res.ok) {
+      if (res.status === 401) throw new BalanceError("401")
+      if (res.status === 403) throw new BalanceError("403")
+      throw new BalanceError(String(res.status))
+    }
+    const json = await res.json() as {
+      plan_type?: string
+      rate_limit?: {
+        primary_window?: {
+          used_percent?: number
+          limit_window_seconds?: number
+          reset_after_seconds?: number
+        }
+        secondary_window?: { used_percent?: number }
+      }
+      code_review_rate_limit?: { primary_window?: { used_percent?: number } } | null
+      credits?: { unlimited?: boolean; balance?: number | null }
+      rate_limit_reset_credits?: { available_count?: number }
+    }
+    const used = json.rate_limit?.primary_window?.used_percent
+    if (typeof used !== "number" || !Number.isFinite(used)) throw new BalanceError("EMPTY")
+    const remaining = Math.max(0, Math.min(100, 100 - used))
+    const percentage = Number.isInteger(remaining) ? remaining.toFixed(0) : remaining.toFixed(1)
+    const details: BalanceDetail[] = []
+    if (json.plan_type) details.push({ key: "plan", value: json.plan_type.toUpperCase() })
+    details.push({ key: "used", value: `${used}%` })
+    details.push({ key: "remaining", value: `${percentage}%` })
+    const primary = json.rate_limit?.primary_window
+    if (typeof primary?.limit_window_seconds === "number") {
+      details.push({ key: "window", value: String(primary.limit_window_seconds) })
+    }
+    if (typeof primary?.reset_after_seconds === "number") {
+      details.push({ key: "reset", value: String(primary.reset_after_seconds) })
+    }
+    const codeReviewUsed = json.code_review_rate_limit?.primary_window?.used_percent
+    if (typeof codeReviewUsed === "number" && Number.isFinite(codeReviewUsed)) {
+      details.push({ key: "codeReview", value: `${Math.max(0, 100 - codeReviewUsed)}%` })
+    }
+    if (json.credits?.unlimited) {
+      details.push({ key: "credits", value: "unlimited" })
+    } else if (typeof json.credits?.balance === "number") {
+      details.push({ key: "credits", value: `$${json.credits.balance.toFixed(2)}` })
+    }
+    const resetCredits = json.rate_limit_reset_credits?.available_count
+    if (typeof resetCredits === "number") {
+      details.push({ key: "resetCredits", value: String(resetCredits) })
+    }
+    return [{ currency: "CODEX", total: `${percentage}%`, display: `Codex ${percentage}%`, details }]
+  },
+}
+
 /** 已注册的 provider 列表（按需追加新适配器）。 */
-export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider, moonshotProvider, hyperProvider]
+export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider, moonshotProvider, hyperProvider, openaiProvider]
 
 /** 按 id 取 provider；未知 id 回退到第一个。 */
 export function getBalanceProvider(id: string): BalanceProvider {
