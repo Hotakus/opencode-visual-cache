@@ -1,0 +1,48 @@
+name: Publish v2 (oc2)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（如 1.7.0-oc2，格式 x.y.z-oc2）"
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - run: npm install -g npm@11
+
+      - run: npm ci
+
+      # 改写 package.json 为 v2 版本（version + exports["./tui"] → tui/index.js + files 加 tui/）
+      - run: node scripts/prepare-v2-publish.mjs ${{ inputs.version }}
+
+      # 生成 _version.ts（对齐 oc2 版本号，注入 v2.js）
+      - run: npm run version
+
+      # 构建（v2.js 注入版本号；external 用宿主 @opentui/solid——renderer 相通）
+      - run: npm run build
+
+      # 校验 v2.js 已注入版本号 + tui/index.js 存在
+      - run: node -e "const c=require('fs').readFileSync('dist/v2.js','utf8'); if(!c.includes(process.argv[1])) { console.error('dist/v2.js 未注入版本号'); process.exit(1) }" ${{ inputs.version }}
+      - run: node -e "if(!require('fs').existsSync('tui/index.js')) { console.error('tui/index.js 缺失'); process.exit(1) }"
+
+      # 发布到 oc2 通道（dist-tag 用 oc2——"v2" 是合法 SemVer range 会被 npm 拒绝；
+      # --access public 与主线 publish.yml 一致；认证用 OIDC/trusted publishing（id-token: write），无 token）
+      - run: npm publish --access public --tag oc2
+
+      # 校验 dist-tag
+      - run: npm dist-tag ls opencode-visual-cache

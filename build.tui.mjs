@@ -20,3 +20,16 @@ await esbuild.build({
   external: ["@opencode-ai/*", "@opentui/*", "solid-js"],
   plugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
 })
+
+// V2 (opencode2) 入口：{ id, setup } 协议，独立产物。
+// @opentui/* + solid-js 保持 external：必须用 V2 宿主的同一实例（renderer 上下文相通——
+// self-contained 内联会导致 "No renderer found"）；@opencode-ai/* 为 type-only（编译擦除）。
+await esbuild.build({
+  entryPoints: ["src/v2/index.tsx"],
+  outfile: "dist/v2.js",
+  format: "esm",
+  platform: "node",
+  bundle: true,
+  external: ["@opencode-ai/*", "@opentui/*", "solid-js"],
+  plugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
+})
