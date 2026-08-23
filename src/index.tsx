@@ -22,15 +22,18 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, For, untrack } from "solid-js"
 import { PLUGIN_VERSION } from "./_version"
-import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry, type BalanceProvider } from "./balance-providers"
-import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
+import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceDetail, type BalanceDetailKey, type BalanceEntry, type BalanceProvider } from "./balance-providers"
+import { LANG_META, createT, detectLang, type LangCode, type Translation } from "./i18n"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 // Bun / Node globals — available at runtime in the OpenCode TUI process
-declare const process: { env: Record<string, string | undefined> } | undefined
+declare const process: {
+  env: Record<string, string | undefined>
+  getBuiltinModule?: (id: string) => unknown
+} | undefined
 
 // ── terminal-width helpers ────────────────────────────────────────
 // CJK characters occupy 2 terminal columns; padEnd/padStart count
@@ -299,15 +302,52 @@ function convertBalance(target: string, targetRate: number, amount: number, from
 /**
  * 从 OpenCode 已认证的 provider 读取 API key 作为余额查询的自动兜底。
  * 匹配复用前缀逻辑：先精确匹配 id，再前缀匹配（如 moonshotai-cn → moonshot）。
- * key 来源：auth.json（provider.key）或配置（provider.options.apiKey）。
- * 仅当手动配置的 key 缺失时使用；读取失败或未匹配返回空串。
+ * OpenAI 优先读取 auth.json OAuth；其他 provider 读取 provider.key / provider.options.apiKey。
+ * 读取失败或未匹配返回空串。
  */
+function readOpenAIOAuthToken(api: TuiPluginApi): string {
+  try {
+    // OpenAI OAuth credentials are stored separately from provider.key.
+    const loader = typeof process !== "undefined" ? process?.getBuiltinModule : undefined
+    const fs = loader?.("node:fs") as { readFileSync(path: string, encoding: "utf8"): string } | undefined
+    if (!fs) return ""
+    const stateDir = api.state.path.state.replace(/[\\/]+$/, "")
+    const home = typeof process !== "undefined" ? (process?.env.HOME || process?.env.USERPROFILE || "") : ""
+    const dataHome = typeof process !== "undefined" ? process?.env.XDG_DATA_HOME : undefined
+    const paths = [
+      stateDir ? `${stateDir}/auth.json` : "",
+      dataHome ? `${dataHome}/opencode/auth.json` : "",
+      home ? `${home}/.local/share/opencode/auth.json` : "",
+    ]
+    for (const path of paths) {
+      if (!path) continue
+      try {
+        const auth = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, unknown>
+        const openai = auth.openai
+        if (openai && typeof openai === "object") {
+          const record = openai as Record<string, unknown>
+          if (record.type === "oauth" && typeof record.access === "string") return record.access
+        }
+      } catch { /* try the next known auth path */ }
+    }
+    return ""
+  } catch {
+    return ""
+  }
+}
+
 function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
   try {
     const provs = api.state.provider as unknown as Array<{ id: string; key?: string; options?: { apiKey?: string } }>
     // 大小写不敏感：精确匹配 id，否则前缀匹配（如 moonshotai-cn → moonshot）
     const id = provider.id.toLowerCase()
     const hit = provs.find((p) => p.id.toLowerCase() === id) ?? provs.find((p) => p.id.toLowerCase().startsWith(id))
+    const isOpenAI = id === "openai"
+    // OAuth token 优先于 provider.key，避免把配置中的占位值当成 access token。
+    if (isOpenAI) {
+      const oauth = readOpenAIOAuthToken(api)
+      if (oauth) return oauth
+    }
     if (!hit) return ""
     const k = typeof hit.key === "string" ? hit.key : ""
     if (k) return k
@@ -343,6 +383,8 @@ function formatBalanceAmount(total: string): string {
  * 优先直接显示偏好币种（CNY/USD…）；偏好币种为换算币种时按汇率折算第一条余额。
  */
 function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): string {
+  const custom = list.find((x) => x.display)
+  if (custom?.display) return custom.display
   const native = pref ? list.find((x) => x.currency === pref) : undefined
   if (native) return balanceSymbol(native.currency) + formatBalanceAmount(native.total)
   const base = list[0]
@@ -354,6 +396,17 @@ function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): st
     ? converted.toLocaleString("en-US", { maximumFractionDigits: 2 })
     : formatBalanceAmount(base.total)
   return balanceSymbol(pref || base.currency) + shown
+}
+
+const BALANCE_DETAIL_LABELS: Record<BalanceDetailKey, keyof Translation> = {
+  plan: "balDetailPlan",
+  used: "balDetailUsed",
+  remaining: "balDetailRemaining",
+  window: "balDetailWindow",
+  reset: "balDetailReset",
+  codeReview: "balDetailCodeReview",
+  credits: "balDetailCredits",
+  resetCredits: "balDetailResetCredits",
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +496,7 @@ function TokenCachePanel(props: {
   const [modelOpen, setModelOpen] = createSignal(true)
   const [distOpen, setDistOpen] = createSignal(false)
   const [skillsOpen, setSkillsOpen] = createSignal(true)
+  const [balanceOpen, setBalanceOpen] = createSignal(false)
   let boxEl: any
 
   // 侧边栏可见性通知：本面板挂载 ⇒ 宿主侧边栏可见（固定占用 42 列输入框宽度）
@@ -472,6 +526,34 @@ function TokenCachePanel(props: {
 
   // ── reactive translation (follows langCode signal) ──
   const t = createT(() => langCode())
+
+  const formatBalanceDuration = (seconds: number, fallback = ""): string => {
+    if (!Number.isFinite(seconds)) return ""
+    let remaining = Math.max(0, Math.round(seconds))
+    const days = Math.floor(remaining / 86400)
+    remaining %= 86400
+    const hours = Math.floor(remaining / 3600)
+    remaining %= 3600
+    const minutes = Math.floor(remaining / 60)
+    const parts: string[] = []
+    if (days > 0) parts.push(`${days}${t("balDay")}`)
+    if (hours > 0 && parts.length < 2) parts.push(`${hours}${t("balHour")}`)
+    if (minutes > 0 && parts.length < 2) parts.push(`${minutes}${t("balMinute")}`)
+    return parts.join(langCode() === "en" ? " " : "") || fallback
+  }
+
+  const formatBalanceDetailValue = (detail: BalanceDetail): string => {
+    if (detail.value === "unlimited") return t("balUnlimited")
+    if (detail.key !== "reset") return detail.value
+    return formatBalanceDuration(Number(detail.value), t("balResetSoon")) || detail.value
+  }
+
+  const formatBalanceDetailLabel = (detail: BalanceDetail): string => {
+    const label = t(BALANCE_DETAIL_LABELS[detail.key])
+    if (detail.windowSeconds === undefined) return label
+    const window = formatBalanceDuration(detail.windowSeconds)
+    return window ? `${label} (${window})` : label
+  }
 
   // ── scan session messages reactively ──
   // SolidJS createMemo re-evaluates whenever the underlying
@@ -721,6 +803,8 @@ function TokenCachePanel(props: {
     return dataSignal()
   })
 
+  const balanceDetails = createMemo(() => balanceState().data?.find((entry) => entry.details)?.details ?? [])
+
   // Persist the last valid distribution so that data() can fall back
   // to it while api.state.part() is re-hydrating after a view switch.
   createEffect(() => {
@@ -754,6 +838,7 @@ function TokenCachePanel(props: {
       setModelOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.model`, true)))
       setDistOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.dist`, false)))
       setSkillsOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.skills`, true)))
+      setBalanceOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.balance.open`, false)))
     } catch {}
 
     // Restore user config (currency, rate, section visibility).
@@ -901,6 +986,15 @@ function TokenCachePanel(props: {
     const used = visualWidth(label) + visualWidth(value) + (unit ? visualWidth(unit) + UNIT_GAP : 0)
     const gap = Math.max(1, gauge - used)
     return label + " ".repeat(gap) + value + (unit ? " " + unit : "")
+  }
+
+  const balanceHeader = () => {
+    const arrow = balanceDetails().length > 0 ? (balanceOpen() ? "\u25bc " : "\u25b6 ") : ""
+    const title = t("secBalance")
+    const summary = balanceState().data ? formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()) : ""
+    const gauge = panelWidth() - gutter()
+    const dividerLength = Math.max(1, gauge - visualWidth(arrow + title) - visualWidth(summary) - 1)
+    return { arrow, title, summary, divider: sep().slice(0, dividerLength) }
   }
 
   return (
@@ -1138,7 +1232,6 @@ function TokenCachePanel(props: {
 
           {/* ── provider balance (single line) ── */}
           <Show when={sectionBalance()}>
-            <text fg={pal().muted}>{sep()}</text>
             <Show when={balanceUnsupported()}>
               <text fg={pal().muted}>
                 <span style={{ fg: pal().muted }}>{"> "}</span>
@@ -1172,9 +1265,31 @@ function TokenCachePanel(props: {
                 </text>
               </Show>
               <Show when={balanceState().status === "ok" && balanceState().data}>
-                <text fg={pal().text}>
-                  {justify(t("balTotal"), formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
-                </text>
+                <Show when={balanceDetails().length > 0}>
+                  <text fg={pal().text} onMouseUp={() => {
+                    const next = !balanceOpen()
+                    setBalanceOpen(next)
+                    persistFold("balance.open", next)
+                  }}>
+                    <span style={{ fg: pal().muted }}>{balanceHeader().arrow}</span>
+                    <span style={{ fg: pal().primary }}><b>{balanceHeader().title}</b></span>
+                    <span style={{ fg: pal().muted }}>{balanceHeader().divider}</span>
+                    <span>{" " + balanceHeader().summary}</span>
+                  </text>
+                  <Show when={balanceOpen()}>
+                    {balanceDetails().map((detail) => (
+                      <text fg={pal().muted}>
+                        {justify(formatBalanceDetailLabel(detail) + ":", formatBalanceDetailValue(detail))}
+                      </text>
+                    ))}
+                  </Show>
+                </Show>
+                <Show when={balanceDetails().length === 0}>
+                  <text fg={pal().muted}>{sep()}</text>
+                  <text fg={pal().text}>
+                    {justify(t("balTotal"), formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
+                  </text>
+                </Show>
               </Show>
             </Show>
           </Show>

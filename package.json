@@ -30,6 +30,7 @@
     "build": "tsc && node build.tui.mjs",
     "build:tui": "node build.tui.mjs",
     "typecheck": "tsc --noEmit",
+    "test:balance": "tsx tests/codex-balance.test.ts",
     "version": "node -e \"require('fs').writeFileSync('src/_version.ts','// auto-generated\\nexport const PLUGIN_VERSION='+JSON.stringify(require('./package.json').version)+';\\n')\"",
     "prepublishOnly": "tsc"
   },

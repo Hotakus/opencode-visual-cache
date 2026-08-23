@@ -6,6 +6,16 @@
 export interface BalanceEntry {
   currency: string   // 原生币种（CNY/USD…），复用现有汇率换算
   total: string      // 余额字符串
+  display?: string   // 非货币额度的预格式化显示文本
+  details?: BalanceDetail[]
+}
+
+export type BalanceDetailKey = "plan" | "used" | "remaining" | "window" | "reset" | "codeReview" | "credits" | "resetCredits"
+
+export interface BalanceDetail {
+  key: BalanceDetailKey
+  value: string
+  windowSeconds?: number
 }
 
 /** provider 统一错误：message 即错误码（401/403/EMPTY/…），显示层直接展示。 */
@@ -149,8 +159,245 @@ const hyperProvider: BalanceProvider = {
   },
 }
 
+function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
+  try {
+    const encoded = token.split(".")[1]
+    if (!encoded || typeof atob !== "function") return undefined
+    const binary = atob(encoded.replace(/-/g, "+").replace(/_/g, "/"))
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+    return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
+function getChatGPTAccountId(token: string): string | undefined {
+  const payload = decodeJwtPayload(token)
+  const auth = payload?.["https://api.openai.com/auth"]
+  if (auth && typeof auth === "object") {
+    const accountId = (auth as Record<string, unknown>).chatgpt_account_id
+    if (typeof accountId === "string" && accountId) return accountId
+  }
+  const accountId = payload?.chatgpt_account_id
+  return typeof accountId === "string" && accountId ? accountId : undefined
+}
+
+type OpenAIRecord = Record<string, unknown>
+
+interface CodexPercentages {
+  used: number
+  remaining: number
+}
+
+interface CodexRateWindow {
+  data: OpenAIRecord
+  windowSeconds?: number
+  order: number
+}
+
+function asRecord(value: unknown): OpenAIRecord | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as OpenAIRecord : undefined
+}
+
+function asFiniteNumber(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN
+  return Number.isFinite(number) ? number : undefined
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value))
+}
+
+function formatPercent(value: number): string {
+  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)
+}
+
+function formatCreditAmount(value: number): string {
+  if (Number.isInteger(value)) return String(value)
+  return value.toFixed(2).replace(/\.?0+$/, "")
+}
+
+function getPercentages(snapshot: OpenAIRecord): CodexPercentages | undefined {
+  const explicitUsed = asFiniteNumber(snapshot.used_percent)
+  const explicitRemaining = asFiniteNumber(snapshot.remaining_percent)
+  if (explicitUsed !== undefined || explicitRemaining !== undefined) {
+    const used = clampPercent(explicitUsed ?? 100 - explicitRemaining!)
+    const remaining = clampPercent(explicitRemaining ?? 100 - used)
+    return { used, remaining }
+  }
+
+  const limit = asFiniteNumber(snapshot.limit)
+  const usedAmount = asFiniteNumber(snapshot.used)
+  const remainingAmount = asFiniteNumber(snapshot.remaining)
+  if (limit !== undefined && limit > 0 && (usedAmount !== undefined || remainingAmount !== undefined)) {
+    const used = usedAmount !== undefined ? (usedAmount / limit) * 100 : 100 - (remainingAmount! / limit) * 100
+    const remaining = remainingAmount !== undefined ? (remainingAmount / limit) * 100 : 100 - used
+    return { used: clampPercent(used), remaining: clampPercent(remaining) }
+  }
+
+  const amountTotal = (usedAmount ?? 0) + (remainingAmount ?? 0)
+  if (amountTotal > 0 && (usedAmount !== undefined || remainingAmount !== undefined)) {
+    const used = usedAmount !== undefined ? (usedAmount / amountTotal) * 100 : 0
+    return { used: clampPercent(used), remaining: clampPercent(100 - used) }
+  }
+  return undefined
+}
+
+function getRateWindows(rateLimit: unknown): CodexRateWindow[] {
+  const record = asRecord(rateLimit)
+  if (!record) return []
+  return Object.entries(record)
+    .map(([name, value], order): CodexRateWindow | undefined => {
+      const data = asRecord(value)
+      if (!data) return undefined
+      const normalizedName = name.toLowerCase()
+      if (normalizedName.includes("individual")) return undefined
+      const windowSeconds = asFiniteNumber(data.limit_window_seconds)
+      const looksLikeWindow = normalizedName.includes("window") ||
+        windowSeconds !== undefined ||
+        "used_percent" in data ||
+        "remaining_percent" in data
+      if (!looksLikeWindow) return undefined
+      return { data, windowSeconds, order }
+    })
+    .filter((window): window is CodexRateWindow => window !== undefined)
+    .sort((a, b) => (a.windowSeconds ?? Number.MAX_SAFE_INTEGER) - (b.windowSeconds ?? Number.MAX_SAFE_INTEGER) || a.order - b.order)
+}
+
+function getResetAfterSeconds(snapshot: OpenAIRecord, nowMs: number): number | undefined {
+  const relative = asFiniteNumber(snapshot.reset_after_seconds)
+  if (relative !== undefined) return Math.max(0, Math.round(relative))
+
+  for (const key of ["reset_at", "resets_at", "resetAt", "resetsAt"]) {
+    const timestamp = asFiniteNumber(snapshot[key])
+    if (timestamp === undefined) continue
+    const timestampSeconds = timestamp > 1e12 ? timestamp / 1000 : timestamp
+    return Math.max(0, Math.round(timestampSeconds - nowMs / 1000))
+  }
+  return undefined
+}
+
+function appendQuotaDetails(details: BalanceDetail[], percentages: CodexPercentages, windowSeconds?: number): void {
+  const scope = windowSeconds === undefined ? {} : { windowSeconds }
+  details.push({ key: "used", value: `${formatPercent(percentages.used)}%`, ...scope })
+  details.push({ key: "remaining", value: `${formatPercent(percentages.remaining)}%`, ...scope })
+}
+
+export function parseOpenAIUsage(raw: unknown, nowMs = Date.now()): BalanceEntry[] {
+  const json = asRecord(raw)
+  if (!json) throw new BalanceError("EMPTY")
+
+  const details: BalanceDetail[] = []
+  if (typeof json.plan_type === "string" && json.plan_type) {
+    details.push({ key: "plan", value: json.plan_type.toUpperCase() })
+  }
+
+  const rateLimit = asRecord(json.rate_limit)
+  const remainingValues: number[] = []
+  let hasRateQuota = false
+  for (const window of getRateWindows(rateLimit)) {
+    const percentages = getPercentages(window.data)
+    if (percentages) {
+      appendQuotaDetails(details, percentages, window.windowSeconds)
+      remainingValues.push(percentages.remaining)
+      hasRateQuota = true
+    }
+    const resetAfter = getResetAfterSeconds(window.data, nowMs)
+    if (resetAfter !== undefined) {
+      details.push({
+        key: "reset",
+        value: String(resetAfter),
+        ...(window.windowSeconds === undefined ? {} : { windowSeconds: window.windowSeconds }),
+      })
+    }
+  }
+
+  const spendControl = asRecord(asRecord(json.spend_control)?.individual_limit)
+  const individualLimit = asRecord(json.individual_limit) ?? asRecord(rateLimit?.individual_limit) ?? spendControl
+  const individualPercentages = individualLimit ? getPercentages(individualLimit) : undefined
+  if (individualPercentages) {
+    remainingValues.push(individualPercentages.remaining)
+    if (!hasRateQuota) appendQuotaDetails(details, individualPercentages)
+  }
+  if (individualLimit) {
+    const resetAfter = getResetAfterSeconds(individualLimit, nowMs)
+    if (resetAfter !== undefined) details.push({ key: "reset", value: String(resetAfter) })
+  }
+
+  const codeReviewWindow = asRecord(asRecord(json.code_review_rate_limit)?.primary_window)
+  const codeReviewUsed = asFiniteNumber(codeReviewWindow?.used_percent)
+  if (codeReviewUsed !== undefined) {
+    details.push({ key: "codeReview", value: `${formatPercent(clampPercent(100 - codeReviewUsed))}%` })
+  }
+
+  const credits = asRecord(json.credits)
+  let hasCreditDetail = false
+  if (credits?.unlimited === true) {
+    details.push({ key: "credits", value: "unlimited" })
+    hasCreditDetail = true
+  } else {
+    const creditBalance = asFiniteNumber(credits?.balance)
+    if (creditBalance !== undefined) {
+      details.push({ key: "credits", value: `$${creditBalance.toFixed(2)}` })
+      hasCreditDetail = true
+    } else if (individualLimit) {
+      const remaining = asFiniteNumber(individualLimit.remaining)
+      const limit = asFiniteNumber(individualLimit.limit)
+      const amounts = [remaining, limit].filter((value): value is number => value !== undefined)
+      if (amounts.length > 0) {
+        details.push({ key: "credits", value: amounts.map(formatCreditAmount).join(" / ") })
+        hasCreditDetail = true
+      }
+    }
+  }
+
+  const resetCredits = asFiniteNumber(asRecord(json.rate_limit_reset_credits)?.available_count)
+  if (resetCredits !== undefined) details.push({ key: "resetCredits", value: String(resetCredits) })
+
+  if (details.length === 0 || (!hasRateQuota && !individualPercentages && !hasCreditDetail && resetCredits === undefined)) {
+    throw new BalanceError("EMPTY")
+  }
+
+  const summaryRemaining = remainingValues.length > 0 ? Math.min(...remainingValues) : undefined
+  const summary = summaryRemaining === undefined ? undefined : formatPercent(summaryRemaining)
+  return [{
+    currency: "CODEX",
+    total: summary === undefined ? "0" : `${summary}%`,
+    display: summary === undefined ? "Codex" : `Codex ${summary}%`,
+    details,
+  }]
+}
+
+const openaiProvider: BalanceProvider = {
+  id: "openai",
+  name: "OpenAI Codex",
+  keyPlaceholder: "OAuth access token (eyJ...)",
+  async fetchBalance(accessToken, signal) {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      Referer: "https://chatgpt.com/",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
+      "OpenAI-Beta": "codex-1",
+      "oai-language": "zh-CN",
+      originator: "Codex Desktop",
+    }
+    const accountId = getChatGPTAccountId(accessToken)
+    if (accountId) headers["ChatGPT-Account-Id"] = accountId
+
+    const res = await fetch("https://chatgpt.com/backend-api/wham/usage", { headers, signal })
+    if (!res.ok) {
+      if (res.status === 401) throw new BalanceError("401")
+      if (res.status === 403) throw new BalanceError("403")
+      throw new BalanceError(String(res.status))
+    }
+    const json = await res.json()
+    return parseOpenAIUsage(json)
+  },
+}
+
 /** 已注册的 provider 列表（按需追加新适配器）。 */
-export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider, moonshotProvider, hyperProvider]
+export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider, moonshotProvider, hyperProvider, openaiProvider]
 
 /** 按 id 取 provider；未知 id 回退到第一个。 */
 export function getBalanceProvider(id: string): BalanceProvider {
