@@ -15,6 +15,7 @@ export type BalanceDetailKey = "plan" | "used" | "remaining" | "window" | "reset
 export interface BalanceDetail {
   key: BalanceDetailKey
   value: string
+  windowSeconds?: number
 }
 
 /** provider 统一错误：message 即错误码（401/403/EMPTY/…），显示层直接展示。 */
@@ -181,6 +182,192 @@ function getChatGPTAccountId(token: string): string | undefined {
   return typeof accountId === "string" && accountId ? accountId : undefined
 }
 
+type OpenAIRecord = Record<string, unknown>
+
+interface CodexPercentages {
+  used: number
+  remaining: number
+}
+
+interface CodexRateWindow {
+  data: OpenAIRecord
+  windowSeconds?: number
+  order: number
+}
+
+function asRecord(value: unknown): OpenAIRecord | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as OpenAIRecord : undefined
+}
+
+function asFiniteNumber(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN
+  return Number.isFinite(number) ? number : undefined
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value))
+}
+
+function formatPercent(value: number): string {
+  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)
+}
+
+function formatCreditAmount(value: number): string {
+  if (Number.isInteger(value)) return String(value)
+  return value.toFixed(2).replace(/\.?0+$/, "")
+}
+
+function getPercentages(snapshot: OpenAIRecord): CodexPercentages | undefined {
+  const explicitUsed = asFiniteNumber(snapshot.used_percent)
+  const explicitRemaining = asFiniteNumber(snapshot.remaining_percent)
+  if (explicitUsed !== undefined || explicitRemaining !== undefined) {
+    const used = clampPercent(explicitUsed ?? 100 - explicitRemaining!)
+    const remaining = clampPercent(explicitRemaining ?? 100 - used)
+    return { used, remaining }
+  }
+
+  const limit = asFiniteNumber(snapshot.limit)
+  const usedAmount = asFiniteNumber(snapshot.used)
+  const remainingAmount = asFiniteNumber(snapshot.remaining)
+  if (limit !== undefined && limit > 0 && (usedAmount !== undefined || remainingAmount !== undefined)) {
+    const used = usedAmount !== undefined ? (usedAmount / limit) * 100 : 100 - (remainingAmount! / limit) * 100
+    const remaining = remainingAmount !== undefined ? (remainingAmount / limit) * 100 : 100 - used
+    return { used: clampPercent(used), remaining: clampPercent(remaining) }
+  }
+
+  const amountTotal = (usedAmount ?? 0) + (remainingAmount ?? 0)
+  if (amountTotal > 0 && (usedAmount !== undefined || remainingAmount !== undefined)) {
+    const used = usedAmount !== undefined ? (usedAmount / amountTotal) * 100 : 0
+    return { used: clampPercent(used), remaining: clampPercent(100 - used) }
+  }
+  return undefined
+}
+
+function getRateWindows(rateLimit: unknown): CodexRateWindow[] {
+  const record = asRecord(rateLimit)
+  if (!record) return []
+  return Object.entries(record)
+    .map(([name, value], order): CodexRateWindow | undefined => {
+      const data = asRecord(value)
+      if (!data) return undefined
+      const normalizedName = name.toLowerCase()
+      if (normalizedName.includes("individual")) return undefined
+      const windowSeconds = asFiniteNumber(data.limit_window_seconds)
+      const looksLikeWindow = normalizedName.includes("window") ||
+        windowSeconds !== undefined ||
+        "used_percent" in data ||
+        "remaining_percent" in data
+      if (!looksLikeWindow) return undefined
+      return { data, windowSeconds, order }
+    })
+    .filter((window): window is CodexRateWindow => window !== undefined)
+    .sort((a, b) => (a.windowSeconds ?? Number.MAX_SAFE_INTEGER) - (b.windowSeconds ?? Number.MAX_SAFE_INTEGER) || a.order - b.order)
+}
+
+function getResetAfterSeconds(snapshot: OpenAIRecord, nowMs: number): number | undefined {
+  const relative = asFiniteNumber(snapshot.reset_after_seconds)
+  if (relative !== undefined) return Math.max(0, Math.round(relative))
+
+  for (const key of ["reset_at", "resets_at", "resetAt", "resetsAt"]) {
+    const timestamp = asFiniteNumber(snapshot[key])
+    if (timestamp === undefined) continue
+    const timestampSeconds = timestamp > 1e12 ? timestamp / 1000 : timestamp
+    return Math.max(0, Math.round(timestampSeconds - nowMs / 1000))
+  }
+  return undefined
+}
+
+function appendQuotaDetails(details: BalanceDetail[], percentages: CodexPercentages, windowSeconds?: number): void {
+  const scope = windowSeconds === undefined ? {} : { windowSeconds }
+  details.push({ key: "used", value: `${formatPercent(percentages.used)}%`, ...scope })
+  details.push({ key: "remaining", value: `${formatPercent(percentages.remaining)}%`, ...scope })
+}
+
+export function parseOpenAIUsage(raw: unknown, nowMs = Date.now()): BalanceEntry[] {
+  const json = asRecord(raw)
+  if (!json) throw new BalanceError("EMPTY")
+
+  const details: BalanceDetail[] = []
+  if (typeof json.plan_type === "string" && json.plan_type) {
+    details.push({ key: "plan", value: json.plan_type.toUpperCase() })
+  }
+
+  const rateLimit = asRecord(json.rate_limit)
+  const remainingValues: number[] = []
+  let hasRateQuota = false
+  for (const window of getRateWindows(rateLimit)) {
+    const percentages = getPercentages(window.data)
+    if (percentages) {
+      appendQuotaDetails(details, percentages, window.windowSeconds)
+      remainingValues.push(percentages.remaining)
+      hasRateQuota = true
+    }
+    const resetAfter = getResetAfterSeconds(window.data, nowMs)
+    if (resetAfter !== undefined) {
+      details.push({
+        key: "reset",
+        value: String(resetAfter),
+        ...(window.windowSeconds === undefined ? {} : { windowSeconds: window.windowSeconds }),
+      })
+    }
+  }
+
+  const spendControl = asRecord(asRecord(json.spend_control)?.individual_limit)
+  const individualLimit = asRecord(json.individual_limit) ?? asRecord(rateLimit?.individual_limit) ?? spendControl
+  const individualPercentages = individualLimit ? getPercentages(individualLimit) : undefined
+  if (individualPercentages) {
+    remainingValues.push(individualPercentages.remaining)
+    if (!hasRateQuota) appendQuotaDetails(details, individualPercentages)
+  }
+  if (individualLimit) {
+    const resetAfter = getResetAfterSeconds(individualLimit, nowMs)
+    if (resetAfter !== undefined) details.push({ key: "reset", value: String(resetAfter) })
+  }
+
+  const codeReviewWindow = asRecord(asRecord(json.code_review_rate_limit)?.primary_window)
+  const codeReviewUsed = asFiniteNumber(codeReviewWindow?.used_percent)
+  if (codeReviewUsed !== undefined) {
+    details.push({ key: "codeReview", value: `${formatPercent(clampPercent(100 - codeReviewUsed))}%` })
+  }
+
+  const credits = asRecord(json.credits)
+  let hasCreditDetail = false
+  if (credits?.unlimited === true) {
+    details.push({ key: "credits", value: "unlimited" })
+    hasCreditDetail = true
+  } else {
+    const creditBalance = asFiniteNumber(credits?.balance)
+    if (creditBalance !== undefined) {
+      details.push({ key: "credits", value: `$${creditBalance.toFixed(2)}` })
+      hasCreditDetail = true
+    } else if (individualLimit) {
+      const remaining = asFiniteNumber(individualLimit.remaining)
+      const limit = asFiniteNumber(individualLimit.limit)
+      const amounts = [remaining, limit].filter((value): value is number => value !== undefined)
+      if (amounts.length > 0) {
+        details.push({ key: "credits", value: amounts.map(formatCreditAmount).join(" / ") })
+        hasCreditDetail = true
+      }
+    }
+  }
+
+  const resetCredits = asFiniteNumber(asRecord(json.rate_limit_reset_credits)?.available_count)
+  if (resetCredits !== undefined) details.push({ key: "resetCredits", value: String(resetCredits) })
+
+  if (details.length === 0 || (!hasRateQuota && !individualPercentages && !hasCreditDetail && resetCredits === undefined)) {
+    throw new BalanceError("EMPTY")
+  }
+
+  const summaryRemaining = remainingValues.length > 0 ? Math.min(...remainingValues) : undefined
+  const summary = summaryRemaining === undefined ? undefined : formatPercent(summaryRemaining)
+  return [{
+    currency: "CODEX",
+    total: summary === undefined ? "0" : `${summary}%`,
+    display: summary === undefined ? "Codex" : `Codex ${summary}%`,
+    details,
+  }]
+}
+
 const openaiProvider: BalanceProvider = {
   id: "openai",
   name: "OpenAI Codex",
@@ -204,49 +391,8 @@ const openaiProvider: BalanceProvider = {
       if (res.status === 403) throw new BalanceError("403")
       throw new BalanceError(String(res.status))
     }
-    const json = await res.json() as {
-      plan_type?: string
-      rate_limit?: {
-        primary_window?: {
-          used_percent?: number
-          limit_window_seconds?: number
-          reset_after_seconds?: number
-        }
-        secondary_window?: { used_percent?: number }
-      }
-      code_review_rate_limit?: { primary_window?: { used_percent?: number } } | null
-      credits?: { unlimited?: boolean; balance?: number | null }
-      rate_limit_reset_credits?: { available_count?: number }
-    }
-    const used = json.rate_limit?.primary_window?.used_percent
-    if (typeof used !== "number" || !Number.isFinite(used)) throw new BalanceError("EMPTY")
-    const remaining = Math.max(0, Math.min(100, 100 - used))
-    const percentage = Number.isInteger(remaining) ? remaining.toFixed(0) : remaining.toFixed(1)
-    const details: BalanceDetail[] = []
-    if (json.plan_type) details.push({ key: "plan", value: json.plan_type.toUpperCase() })
-    details.push({ key: "used", value: `${used}%` })
-    details.push({ key: "remaining", value: `${percentage}%` })
-    const primary = json.rate_limit?.primary_window
-    if (typeof primary?.limit_window_seconds === "number") {
-      details.push({ key: "window", value: String(primary.limit_window_seconds) })
-    }
-    if (typeof primary?.reset_after_seconds === "number") {
-      details.push({ key: "reset", value: String(primary.reset_after_seconds) })
-    }
-    const codeReviewUsed = json.code_review_rate_limit?.primary_window?.used_percent
-    if (typeof codeReviewUsed === "number" && Number.isFinite(codeReviewUsed)) {
-      details.push({ key: "codeReview", value: `${Math.max(0, 100 - codeReviewUsed)}%` })
-    }
-    if (json.credits?.unlimited) {
-      details.push({ key: "credits", value: "unlimited" })
-    } else if (typeof json.credits?.balance === "number") {
-      details.push({ key: "credits", value: `$${json.credits.balance.toFixed(2)}` })
-    }
-    const resetCredits = json.rate_limit_reset_credits?.available_count
-    if (typeof resetCredits === "number") {
-      details.push({ key: "resetCredits", value: String(resetCredits) })
-    }
-    return [{ currency: "CODEX", total: `${percentage}%`, display: `Codex ${percentage}%`, details }]
+    const json = await res.json()
+    return parseOpenAIUsage(json)
   },
 }
 

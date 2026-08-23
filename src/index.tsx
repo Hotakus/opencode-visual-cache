@@ -527,12 +527,9 @@ function TokenCachePanel(props: {
   // ── reactive translation (follows langCode signal) ──
   const t = createT(() => langCode())
 
-  const formatBalanceDetailValue = (detail: BalanceDetail): string => {
-    if (detail.value === "unlimited") return t("balUnlimited")
-    if (detail.key !== "window" && detail.key !== "reset") return detail.value
-
-    let remaining = Math.max(0, Math.round(Number(detail.value)))
-    if (!Number.isFinite(remaining)) return detail.value
+  const formatBalanceDuration = (seconds: number, fallback = ""): string => {
+    if (!Number.isFinite(seconds)) return ""
+    let remaining = Math.max(0, Math.round(seconds))
     const days = Math.floor(remaining / 86400)
     remaining %= 86400
     const hours = Math.floor(remaining / 3600)
@@ -542,7 +539,20 @@ function TokenCachePanel(props: {
     if (days > 0) parts.push(`${days}${t("balDay")}`)
     if (hours > 0 && parts.length < 2) parts.push(`${hours}${t("balHour")}`)
     if (minutes > 0 && parts.length < 2) parts.push(`${minutes}${t("balMinute")}`)
-    return parts.join(langCode() === "en" ? " " : "") || t("balResetSoon")
+    return parts.join(langCode() === "en" ? " " : "") || fallback
+  }
+
+  const formatBalanceDetailValue = (detail: BalanceDetail): string => {
+    if (detail.value === "unlimited") return t("balUnlimited")
+    if (detail.key !== "reset") return detail.value
+    return formatBalanceDuration(Number(detail.value), t("balResetSoon")) || detail.value
+  }
+
+  const formatBalanceDetailLabel = (detail: BalanceDetail): string => {
+    const label = t(BALANCE_DETAIL_LABELS[detail.key])
+    if (detail.windowSeconds === undefined) return label
+    const window = formatBalanceDuration(detail.windowSeconds)
+    return window ? `${label} (${window})` : label
   }
 
   // ── scan session messages reactively ──
@@ -1269,7 +1279,7 @@ function TokenCachePanel(props: {
                   <Show when={balanceOpen()}>
                     {balanceDetails().map((detail) => (
                       <text fg={pal().muted}>
-                        {justify(t(BALANCE_DETAIL_LABELS[detail.key]) + ":", formatBalanceDetailValue(detail))}
+                        {justify(formatBalanceDetailLabel(detail) + ":", formatBalanceDetailValue(detail))}
                       </text>
                     ))}
                   </Show>
