@@ -125,8 +125,32 @@ const moonshotProvider: BalanceProvider = {
   },
 }
 
+const hyperProvider: BalanceProvider = {
+  id: "hyper",
+  name: "Charm Hyper",
+  keyPlaceholder: "sk-hyper-...",
+  async fetchBalance(apiKey, signal) {
+    // 官方接口：GET /v1/credits → {"balance": 98}（积分余额）
+    const res = await fetch("https://hyper.charm.land/v1/credits", {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      signal,
+    })
+    if (!res.ok) {
+      if (res.status === 401) throw new BalanceError("401")
+      if (res.status === 403) throw new BalanceError("403")
+      throw new BalanceError(String(res.status))
+    }
+    const json = await res.json() as { balance?: string | number }
+    const balance = json.balance
+    if (typeof balance === "undefined" || balance === null) throw new BalanceError("EMPTY")
+    // hyper 积分换算：100 积分 = $5，即 1 积分 = $0.05
+    const usd = (Number(balance) * 0.05).toFixed(2)
+    return [{ currency: "USD", total: usd }]
+  },
+}
+
 /** 已注册的 provider 列表（按需追加新适配器）。 */
-export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider, moonshotProvider]
+export const balanceProviders: BalanceProvider[] = [deepseekProvider, siliconflowProvider, openrouterProvider, moonshotProvider, hyperProvider]
 
 /** 按 id 取 provider；未知 id 回退到第一个。 */
 export function getBalanceProvider(id: string): BalanceProvider {
