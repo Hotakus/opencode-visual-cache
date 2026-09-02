@@ -99,7 +99,7 @@ export function StatusView(props: {
   })
 
   return (
-    <Show when={segsW() > 0 && props.signals.sectionBottom()}>
+    <Show when={segsW() > 0 && stats().hitRate >= 0 && props.signals.sectionBottom()}>
       <text>
         <For each={segs()}>{(sg) => <span style={{ fg: sg.color }}>{sg.text}</span>}</For>
       </text>
