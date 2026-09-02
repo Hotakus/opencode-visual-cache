@@ -1,25 +1,37 @@
 /** @jsxImportSource @opentui/solid */
 
-import { createMemo, For, Show } from "solid-js"
+import { createMemo, For, onMount, Show } from "solid-js"
 import type { Context } from "./types"
-import type { PanelSignals } from "../panel/panel-api"
+import type { PanelApi, PanelSignals } from "../panel/panel-api"
 import { collectLastHitRate } from "./data"
 import { desaturateTo, fmtCompact, formatBalanceText, MAX_SAT, FALLBACK, visualWidth } from "../core"
 import { createT } from "../i18n"
 import { mapTheme } from "./theme"
+
+const KV_PREFIX = "cache_panel"
 
 /**
  * 底部状态栏（prompt.footer.status）——对齐 V1 BottomStatusBar 统计段口径：
  * 单条命中率（最后一条有 token 的 assistant 消息）+ 趋势 + Tokens 总量 + 余额。
  * 余额读共享 signals.balanceState（PluginRoot 驱动轮询）；provider 不支持余额时隐藏余额段（对齐 V1）。
  * 颜色经 mapTheme（V1 形状）——与侧边栏命中率颜色同源，保证两处一致。
+ * 显隐受 signals.sectionBottom 控制（/cache-section 切换），启动时从 kv 恢复偏好（对齐 V1）。
  */
 export function StatusView(props: {
   context: Context
+  api: PanelApi
   signals: PanelSignals
   sessionID: string
 }) {
   const t = createT(() => props.signals.langCode())
+
+  // 恢复显隐偏好（默认显示；关闭时隐藏统计段，与宿主默认 hint 行一致）
+  onMount(() => {
+    try {
+      const v = props.api.kv.get<boolean>(`${KV_PREFIX}.section.bottom`, true)
+      props.signals.setSectionBottom(v !== false)
+    } catch {}
+  })
 
   // 与侧边栏 TokenCachePanel 同一颜色来源（mapTheme → desaturateTo）
   const pal = createMemo(() => {
@@ -87,7 +99,7 @@ export function StatusView(props: {
   })
 
   return (
-    <Show when={segsW() > 0}>
+    <Show when={segsW() > 0 && stats().hitRate >= 0 && props.signals.sectionBottom()}>
       <text>
         <For each={segs()}>{(sg) => <span style={{ fg: sg.color }}>{sg.text}</span>}</For>
       </text>

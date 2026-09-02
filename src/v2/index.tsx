@@ -172,7 +172,7 @@ const mod: PluginModule & { server: () => Promise<Record<string, never>> } = {
     context.ui.slot({
       append: "prompt.footer.status",
       render: (props) => (
-        <StatusView context={context} signals={signals} sessionID={String(props.sessionID ?? "")} />
+        <StatusView context={context} api={api} signals={signals} sessionID={String(props.sessionID ?? "")} />
       ),
     })
 
