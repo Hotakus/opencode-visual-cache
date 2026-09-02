@@ -65,8 +65,16 @@ function createPanelSignals(): PanelSignals & { setBalanceState: (v: BalanceStat
   }
 }
 
-/** 面板根组件：在组件渲染上下文注册命令 layer（keymap.layer 必须由组件调用），
- *  再渲染共享 TokenCachePanel；同时驱动余额轮询（对齐 V1 tui() 的 pollBalance）。 */
+/** 命令根组件：挂在始终存在的 app slot，避免侧栏隐藏时命令层未挂载。 */
+function CommandRoot(props: { context: Context; api: PanelApi; signals: PanelSignals }) {
+  props.context.keymap.layer(() => ({
+    mode: "global",
+    commands: makeCommands(props.context, props.api, props.signals),
+  }))
+  return null
+}
+
+/** 面板根组件：渲染共享 TokenCachePanel；同时驱动余额轮询（对齐 V1 tui() 的 pollBalance）。 */
 function PluginRoot(props: {
   context: Context
   api: PanelApi
@@ -75,11 +83,6 @@ function PluginRoot(props: {
 }) {
   // 请求序号：防止定时轮询与手动刷新并发时，慢的旧请求覆盖新结果（对齐 V1）
   let balanceSeq = 0
-  // 对齐官方内置插件示例（feature-plugins/system/plugins.tsx）：mode 用 global
-  props.context.keymap.layer(() => ({
-    mode: "global",
-    commands: makeCommands(props.context, props.api, props.signals),
-  }))
   // 语言偏好恢复（对齐 V1 tui() restoreLang：优先用户 /cache-lang 设置，覆盖自动检测）
   onMount(() => {
     try {
@@ -166,6 +169,12 @@ const mod: PluginModule & { server: () => Promise<Record<string, never>> } = {
       render: (props) => (
         <PluginRoot context={context} api={api} signals={signals} sessionID={String(props.sessionID ?? "")} />
       ),
+    })
+
+    // 命令层不能依赖侧栏挂载；窄屏或隐藏侧栏时仍需可用。
+    context.ui.slot({
+      append: "app",
+      render: () => <CommandRoot context={context} api={api} signals={signals} />,
     })
 
     // 底部状态栏（完整口径与 V1 一致；余额读共享 signals.balanceState）
