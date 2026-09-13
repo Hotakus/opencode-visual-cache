@@ -1,13 +1,13 @@
 {
-  "name": "opencode-visual-cache",
-  "version": "1.6.5",
-  "description": "OpenCode TUI plugin displaying real-time token cache hit rate in the sidebar",
+  "name": "@kilng235/opencode-visual-cache",
+  "version": "2.0.0-v2.0",
+  "description": "OpenCode V2 TUI plugin displaying real-time token cache hit rate in the sidebar. Fork of opencode-visual-cache with V2 plugin API support.",
   "type": "module",
   "types": "dist/index.d.ts",
   "exports": {
-    "./server": {
-      "import": "./dist/server.js",
-      "types": "./dist/server.d.ts"
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     },
     "./tui": {
       "import": "./dist/tui.js",
@@ -20,8 +20,7 @@
     "dist",
     "src",
     "install.mjs",
-    "README.md",
-    "README_EN.md"
+    "README.md"
   ],
   "bin": {
     "opencode-visual-cache": "install.mjs"
@@ -38,25 +37,24 @@
     "opencode",
     "opencode-plugin",
     "tui",
+    "v2",
     "token",
     "cache-hit-rate",
     "cost-tracking"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Hotakus/opencode-visual-cache.git"
+    "url": "git+https://github.com/kilng235/opencode-visual-cache.git"
   },
   "license": "MIT",
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.14.0",
-    "@opencode-ai/sdk": ">=1.14.0",
-    "@opentui/core": ">=0.2.0",
-    "@opentui/solid": ">=0.2.0",
+    "@opencode/plugin": ">=1.0.0",
+    "@opentui/core": ">=0.5.8",
+    "@opentui/solid": ">=0.5.8",
     "solid-js": ">=1.9.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.16",
-    "@opencode-ai/sdk": "^1.18.16",
+    "@opencode/plugin": "latest",
     "@opentui/core": "^0.5.1",
     "@opentui/solid": "^0.5.1",
     "@opentui/keymap": "^0.5.1",

@@ -1,27 +1,26 @@
 #!/usr/bin/env node
 
 /**
- * Install script for opencode-visual-cache.
+ * Install script for @kilng235/opencode-visual-cache.
  *
- * Creates or updates `~/.config/opencode/tui.jsonc` so OpenCode loads
- * the TUI sidebar plugin.  Also optionally adds the plugin to
- * `opencode.jsonc` for forward compatibility.
+ * Creates or updates `~/.config/opencode/opencode.jsonc` so OpenCode V2 loads
+ * the TUI sidebar plugin via the `plugins` array.
  *
  * Usage:
  *   node install.mjs
- *   npm explore opencode-cache-hit-tui -- node install.mjs
+ *   npm explore @kilng235/opencode-visual-cache -- node install.mjs
  */
 
 import { readFile, writeFile, mkdir, access } from "node:fs/promises"
 import { constants } from "node:fs"
 import { homedir, platform } from "node:os"
-import { join, dirname } from "node:path"
+import { join } from "node:path"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const PLUGIN_SPEC = "opencode-visual-cache"
+const PLUGIN_SPEC = "@kilng235/opencode-visual-cache@latest"
 
 function configDir() {
   if (platform() === "win32") {
@@ -46,13 +45,13 @@ function formatJSONC(obj) {
   return JSON.stringify(obj, null, 2) + "\n"
 }
 
-/** Merge plugin into an existing plugin array, avoiding duplicates. */
+/** Merge plugin into an existing `plugins` array, avoiding duplicates. */
 function mergePlugin(existing, spec) {
-  const plugins = existing.plugin ?? []
-  if (plugins.some((p) => (typeof p === "string" ? p : p[0]) === spec)) {
+  const plugins = existing.plugins ?? []
+  if (plugins.some((p) => (typeof p === "string" ? p : p.package ?? p[0]) === spec)) {
     return false // already present
   }
-  existing.plugin = [...plugins, spec]
+  existing.plugins = [...plugins, spec]
   return true
 }
 
@@ -64,44 +63,29 @@ async function main() {
   const dir = configDir()
   await mkdir(dir, { recursive: true })
 
-  // ---- tui.jsonc ----
-  const tuiPath = join(dir, "tui.jsonc")
-  let tuiChanged = false
+  const cfgPath = join(dir, "opencode.jsonc")
+  let changed = false
 
-  if (await exists(tuiPath)) {
-    const cfg = await readJSONC(tuiPath)
-    tuiChanged = mergePlugin(cfg, PLUGIN_SPEC)
-    if (tuiChanged) {
-      await writeFile(tuiPath, formatJSONC(cfg))
-      console.log(`[opencode-cache-hit-tui] Added to ${tuiPath}`)
+  if (await exists(cfgPath)) {
+    const cfg = await readJSONC(cfgPath)
+    changed = mergePlugin(cfg, PLUGIN_SPEC)
+    if (changed) {
+      await writeFile(cfgPath, formatJSONC(cfg))
+      console.log(`[opencode-visual-cache] Added to ${cfgPath}`)
     } else {
-      console.log(`[opencode-cache-hit-tui] Already in ${tuiPath}`)
+      console.log(`[opencode-visual-cache] Already in ${cfgPath}`)
     }
   } else {
     const cfg = {
-      $schema: "https://opencode.ai/tui.json",
-      plugin: [PLUGIN_SPEC],
+      $schema: "https://opencode.ai/config.json",
+      plugins: [PLUGIN_SPEC],
     }
-    await writeFile(tuiPath, formatJSONC(cfg))
-    console.log(`[opencode-cache-hit-tui] Created ${tuiPath}`)
-    tuiChanged = true
+    await writeFile(cfgPath, formatJSONC(cfg))
+    console.log(`[opencode-visual-cache] Created ${cfgPath}`)
+    changed = true
   }
 
-  // ---- opencode.jsonc (forward compat) ----
-  const ocPath = join(dir, "opencode.jsonc")
-  let ocChanged = false
-
-  if (await exists(ocPath)) {
-    const cfg = await readJSONC(ocPath)
-    ocChanged = mergePlugin(cfg, PLUGIN_SPEC)
-    if (ocChanged) {
-      await writeFile(ocPath, formatJSONC(cfg))
-      console.log(`[opencode-cache-hit-tui] Also added to ${ocPath}`)
-    }
-  }
-
-  // ---- done ----
-  if (tuiChanged || ocChanged) {
+  if (changed) {
     console.log("\nDone! Restart OpenCode to see the Token Cache sidebar panel.")
   } else {
     console.log("\nAlready installed. Restart OpenCode if you haven't yet.")
