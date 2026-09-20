@@ -65,7 +65,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
     const current = api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "") ?? ""
     const val = await context.ui.dialog.prompt({
       title: provider.name,
-      message: t()("balKeyPrompt", { p: provider.name }),
+      description: t()("balKeyPrompt", { p: provider.name }),
       placeholder: provider.keyPlaceholder ?? "sk-...",
     })
     if (val === undefined) return // 取消
@@ -124,7 +124,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       run: async () => {
         const val = await context.ui.dialog.prompt({
           title: "Exchange Rate",
-          message: "Enter the exchange rate from USD to your currency (e.g. 7.2 for CNY)",
+          description: "Enter the exchange rate from USD to your currency (e.g. 7.2 for CNY)",
           placeholder: "1.0",
         })
         if (val === undefined) return
@@ -440,7 +440,7 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
           // ── 无子代理 → DialogPrompt 手动粘贴 ──
           const val = await context.ui.dialog.prompt({
             title: signals.overrideSessionId() ? t()("subSwitchTitle") : t()("subViewTitle"),
-            message: t()("subNoFound"),
+            description: t()("subNoFound"),
             placeholder: "ses_...",
           })
           if (val === undefined) return

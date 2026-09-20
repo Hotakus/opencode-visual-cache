@@ -7,13 +7,16 @@ import type { Context } from "./types"
  *  - step 取 300：更亮（对齐 V2 暗色强调惯例的亮端），500/400 在暗背景下偏深
  */
 export function mapTheme(theme: Context["theme"]): TuiThemeCurrent {
+  const text = theme.text
+  const feedback = text.feedback
+  // 文本色 token 有两代命名（base/muted 与 default/subdued），base/muted 优先。
   return {
     primary: theme.hue.interactive[300],
-    text: theme.text.default,
-    textMuted: theme.text.subdued,
-    success: theme.text.feedback.success.default,
-    warning: theme.text.feedback.warning.default,
-    error: theme.text.feedback.error.default,
-    border: theme.text.subdued,
+    text: text.base ?? text.default,
+    textMuted: text.muted ?? text.subdued,
+    success: feedback.success.base ?? feedback.success.default,
+    warning: feedback.warning.base ?? feedback.warning.default,
+    error: feedback.error.base ?? feedback.error.default,
+    border: text.muted ?? text.subdued,
   } as unknown as TuiThemeCurrent
 }

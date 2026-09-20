@@ -17,13 +17,17 @@ export interface Theme {
     /** 主题强调色别名。 */
     readonly accent: { readonly 500: string }
   }
+  /** 文本色 token 存在两代命名：base/muted 与 default/subdued。宿主按其中一代提供，
+   *  读取时以 base/muted 为准，故全部声明为可选。 */
   readonly text: {
-    readonly default: string
-    readonly subdued: string
+    readonly base?: string
+    readonly muted?: string
+    readonly default?: string
+    readonly subdued?: string
     readonly feedback: {
-      readonly success: { readonly default: string }
-      readonly error: { readonly default: string }
-      readonly warning: { readonly default: string }
+      readonly success: { readonly base?: string; readonly default?: string }
+      readonly error: { readonly base?: string; readonly default?: string }
+      readonly warning: { readonly base?: string; readonly default?: string }
     }
   }
 }
@@ -128,7 +132,7 @@ export interface Context {
       show(options: { readonly message: string; readonly title?: string; readonly variant?: string }): void
     }
     readonly dialog: {
-      prompt(options: { readonly title: string; readonly message?: string; readonly placeholder?: string }): Promise<string | undefined>
+      prompt(options: { readonly title: string; readonly description?: string; readonly placeholder?: string; readonly value?: string }): Promise<string | undefined>
       select<Value>(options: {
         readonly title: string
         readonly placeholder?: string
