@@ -838,7 +838,6 @@ export function TokenCachePanel(props: {
                   </Show>
                 </Show>
                 <Show when={balanceDetails().length === 0}>
-                  <text fg={pal().muted}>{sep()}</text>
                   <text fg={pal().text}>
                     {justify(t("balTotal"), formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
                   </text>
