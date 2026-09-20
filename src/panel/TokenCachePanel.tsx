@@ -5,8 +5,8 @@ import type { TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 import type { UserMessage, AssistantMessage, Message } from "@opencode-ai/sdk"
 import type { Part, TextPart, ToolPart, FilePart, ReasoningPart } from "@opencode-ai/sdk/v2"
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, For, untrack } from "solid-js"
-import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry, type BalanceProvider } from "../balance-providers"
-import { createT, type LangCode } from "../i18n"
+import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceDetail, type BalanceDetailKey, type BalanceEntry, type BalanceProvider } from "../balance-providers"
+import { createT, type LangCode, type Translation } from "../i18n"
 import { MAX_SAT, FALLBACK, desaturateTo, dimColor, fmt, fmtCost, num, estimateTokens, progressBar, visualWidth, visualPadEnd, truncateVisual, formatBalanceText, type TokenDist } from "../core"
 import { PLUGIN_VERSION } from "../_version"
 import type { PanelApi, PanelSignals } from "./panel-api"
@@ -22,6 +22,18 @@ const PCT_FIXED_WIDTH = 5  // "XX.X%" 固定 5 字符宽度
 const HEADER_PREFIX = 2    // 折叠态标题行：▼/▶ 图标 + 图标后空格
 const UNIT_GAP = 1         // 数值与单位前的空格（如 " tok"）
 
+/** 余额明细 key → i18n 文案 key。 */
+const BALANCE_DETAIL_LABELS: Record<BalanceDetailKey, keyof Translation> = {
+  plan: "balDetailPlan",
+  used: "balDetailUsed",
+  remaining: "balDetailRemaining",
+  window: "balDetailWindow",
+  reset: "balDetailReset",
+  codeReview: "balDetailCodeReview",
+  credits: "balDetailCredits",
+  resetCredits: "balDetailResetCredits",
+}
+
 export function TokenCachePanel(props: {
   theme: TuiThemeCurrent
   api: PanelApi
@@ -34,6 +46,7 @@ export function TokenCachePanel(props: {
   const [modelOpen, setModelOpen] = createSignal(true)
   const [distOpen, setDistOpen] = createSignal(false)
   const [skillsOpen, setSkillsOpen] = createSignal(true)
+  const [balanceOpen, setBalanceOpen] = createSignal(false)
   let boxEl: any
 
   // 侧边栏可见性通知：本面板挂载 ⇒ 宿主侧边栏可见（固定占用 42 列输入框宽度）
@@ -64,6 +77,34 @@ export function TokenCachePanel(props: {
   // ── reactive translation (follows langCode signal) ──
   const t = createT(() => langCode())
 
+  const formatBalanceDuration = (seconds: number, fallback = ""): string => {
+    if (!Number.isFinite(seconds)) return ""
+    let remaining = Math.max(0, Math.round(seconds))
+    const days = Math.floor(remaining / 86400)
+    remaining %= 86400
+    const hours = Math.floor(remaining / 3600)
+    remaining %= 3600
+    const minutes = Math.floor(remaining / 60)
+    const parts: string[] = []
+    if (days > 0) parts.push(`${days}${t("balDay")}`)
+    if (hours > 0 && parts.length < 2) parts.push(`${hours}${t("balHour")}`)
+    if (minutes > 0 && parts.length < 2) parts.push(`${minutes}${t("balMinute")}`)
+    return parts.join(langCode() === "en" ? " " : "") || fallback
+  }
+
+  const formatBalanceDetailValue = (detail: BalanceDetail): string => {
+    if (detail.value === "unlimited") return t("balUnlimited")
+    if (detail.key !== "reset") return detail.value
+    return formatBalanceDuration(Number(detail.value), t("balResetSoon")) || detail.value
+  }
+
+  const formatBalanceDetailLabel = (detail: BalanceDetail): string => {
+    const label = t(BALANCE_DETAIL_LABELS[detail.key])
+    if (detail.windowSeconds === undefined) return label
+    const window = formatBalanceDuration(detail.windowSeconds)
+    return window ? `${label} (${window})` : label
+  }
+
   // ── scan session messages reactively ──
   // SolidJS createMemo re-evaluates whenever the underlying
   // api.state.session state changes — no event listener needed.
@@ -93,6 +134,9 @@ export function TokenCachePanel(props: {
 
   // 当前 provider 显示名（余额查询状态为共享信号，见 PanelSignals.balanceState）
   const providerName = createMemo(() => getBalanceProvider(balanceProviderId()).name)
+
+  /** 余额明细列表：取带 details 的那条余额记录。 */
+  const balanceDetails = createMemo(() => balanceState().data?.find((entry) => entry.details)?.details ?? [])
 
   // 自动切换当前会话的 provider（前缀匹配）。手动切换会关闭此行为。
   // 直接追踪 messages 取最后一条 assistant 消息的 providerID——
@@ -345,6 +389,7 @@ export function TokenCachePanel(props: {
       setModelOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.model`, true)))
       setDistOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.dist`, false)))
       setSkillsOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.skills`, true)))
+      setBalanceOpen(Boolean(props.api.kv.get(`${KV_PREFIX}.balance.open`, false)))
     } catch {}
 
     // Restore user config (currency, rate, section visibility).
@@ -461,6 +506,16 @@ export function TokenCachePanel(props: {
   const gutter = createMemo(() => borderVisible() ? 6 : 0)
 
   const sep = createMemo(() => "\u2500".repeat(Math.max(1, panelWidth() - gutter())))
+
+  /** 余额区标题行：箭头 + 标题 + 分隔线 + 摘要（明细存在时可折叠）。 */
+  const balanceHeader = () => {
+    const arrow = balanceDetails().length > 0 ? (balanceOpen() ? "\u25bc " : "\u25b6 ") : ""
+    const title = t("secBalance")
+    const summary = balanceState().data ? formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()) : ""
+    const gauge = panelWidth() - gutter()
+    const dividerLength = Math.max(1, gauge - visualWidth(arrow + title) - visualWidth(summary) - 1)
+    return { arrow, title, summary, divider: sep().slice(0, dividerLength) }
+  }
   function trendLabel(t: number): string {
     // |t| < 0.05 视为无变化：避免显示 "↑0.0%" 的矛盾（箭头存在但数值截断为零）
     if (Math.abs(t) < 0.05) return "-"
@@ -763,9 +818,31 @@ export function TokenCachePanel(props: {
                 </text>
               </Show>
               <Show when={balanceState().status === "ok" && balanceState().data}>
-                <text fg={pal().text}>
-                  {justify(t("balTotal"), formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
-                </text>
+                <Show when={balanceDetails().length > 0}>
+                  <text fg={pal().text} onMouseUp={() => {
+                    const next = !balanceOpen()
+                    setBalanceOpen(next)
+                    persistFold("balance.open", next)
+                  }}>
+                    <span style={{ fg: pal().muted }}>{balanceHeader().arrow}</span>
+                    <span style={{ fg: pal().primary }}><b>{balanceHeader().title}</b></span>
+                    <span style={{ fg: pal().muted }}>{balanceHeader().divider}</span>
+                    <span>{" " + balanceHeader().summary}</span>
+                  </text>
+                  <Show when={balanceOpen()}>
+                    {balanceDetails().map((detail) => (
+                      <text fg={pal().muted}>
+                        {justify(formatBalanceDetailLabel(detail) + ":", formatBalanceDetailValue(detail))}
+                      </text>
+                    ))}
+                  </Show>
+                </Show>
+                <Show when={balanceDetails().length === 0}>
+                  <text fg={pal().muted}>{sep()}</text>
+                  <text fg={pal().text}>
+                    {justify(t("balTotal"), formatBalanceText(balanceState().data!, balanceCurrency(), exchangeRate()))}
+                  </text>
+                </Show>
               </Show>
             </Show>
           </Show>
