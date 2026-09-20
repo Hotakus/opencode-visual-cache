@@ -40,7 +40,10 @@ import type { PanelSignals, BalanceState } from "./panel/panel-api"
 // ---------------------------------------------------------------------------
 
 // Bun / Node globals — available at runtime in the OpenCode TUI process
-declare const process: { env: Record<string, string | undefined> } | undefined
+declare const process: {
+  env: Record<string, string | undefined>
+  getBuiltinModule?: (id: string) => unknown
+} | undefined
 // ── language ──────────────────────────────────────────────────────
 // 语言初始化：环境变量 CACHE_TUI_LANG 覆盖 → 否则按系统 locale 自动检测。
 // 用户通过 /cache-lang 设置的偏好会在 KV 就绪后优先覆盖（见 tui() 内恢复逻辑）。
@@ -58,9 +61,43 @@ const INIT_LANG: LangCode = DEBUG_LANG !== undefined && LANG_META.some((m) => m.
 const BALANCE_POLL_MS = 5 * 60 * 1000 // 5 minutes
 
 /**
+ * 读取 OpenAI 的 OAuth access token（存放于 auth.json，与 provider.key 分开）。
+ * 依次尝试 state 目录、XDG data 目录、~/.local/share；全部失败返回空串。
+ */
+function readOpenAIOAuthToken(api: TuiPluginApi): string {
+  try {
+    const loader = typeof process !== "undefined" ? process?.getBuiltinModule : undefined
+    const fs = loader?.("node:fs") as { readFileSync(path: string, encoding: "utf8"): string } | undefined
+    if (!fs) return ""
+    const stateDir = api.state.path.state.replace(/[\\/]+$/, "")
+    const home = typeof process !== "undefined" ? (process?.env.HOME || process?.env.USERPROFILE || "") : ""
+    const dataHome = typeof process !== "undefined" ? process?.env.XDG_DATA_HOME : undefined
+    const paths = [
+      stateDir ? `${stateDir}/auth.json` : "",
+      dataHome ? `${dataHome}/opencode/auth.json` : "",
+      home ? `${home}/.local/share/opencode/auth.json` : "",
+    ]
+    for (const path of paths) {
+      if (!path) continue
+      try {
+        const auth = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, unknown>
+        const openai = auth.openai
+        if (openai && typeof openai === "object") {
+          const record = openai as Record<string, unknown>
+          if (record.type === "oauth" && typeof record.access === "string") return record.access
+        }
+      } catch { /* try the next known auth path */ }
+    }
+    return ""
+  } catch {
+    return ""
+  }
+}
+
+/**
  * 从 OpenCode 已认证的 provider 读取 API key 作为余额查询的自动兜底。
  * 匹配复用前缀逻辑：先精确匹配 id，再前缀匹配（如 moonshotai-cn → moonshot）。
- * key 来源：auth.json（provider.key）或配置（provider.options.apiKey）。
+ * OpenAI 优先读取 auth.json 的 OAuth token；其他 provider 读取 provider.key / provider.options.apiKey。
  * 仅当手动配置的 key 缺失时使用；读取失败或未匹配返回空串。
  */
 function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
@@ -69,6 +106,11 @@ function findOpencodeKey(api: TuiPluginApi, provider: BalanceProvider): string {
     // 大小写不敏感：精确匹配 id，否则前缀匹配（如 moonshotai-cn → moonshot）
     const id = provider.id.toLowerCase()
     const hit = provs.find((p) => p.id.toLowerCase() === id) ?? provs.find((p) => p.id.toLowerCase().startsWith(id))
+    // OAuth token 优先于 provider.key，避免把配置中的占位值当成 access token。
+    if (id === "openai") {
+      const oauth = readOpenAIOAuthToken(api)
+      if (oauth) return oauth
+    }
     if (!hit) return ""
     const k = typeof hit.key === "string" ? hit.key : ""
     if (k) return k

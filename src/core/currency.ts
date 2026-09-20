@@ -32,6 +32,8 @@ export function balanceSymbol(currency: string): string {
  * 优先直接显示偏好币种（CNY/USD…）；偏好币种为换算币种时按汇率折算第一条余额。
  */
 export function formatBalanceText(list: BalanceEntry[], pref: string, rate: number): string {
+  const custom = list.find((x) => x.display)
+  if (custom?.display) return custom.display
   const native = pref ? list.find((x) => x.currency === pref) : undefined
   if (native) return balanceSymbol(native.currency) + formatBalanceAmount(native.total)
   const base = list[0]
