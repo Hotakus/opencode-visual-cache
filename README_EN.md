@@ -83,6 +83,19 @@ Create or edit `~/.config/opencode/cli.json` and append the following entry to t
 
 If the file already contains other plugins or settings, just append this object entry to the existing `plugins` array.
 
+> **Note**: Do not install this plugin with `opencode plugin add`. That command writes the entry to `opencode.jsonc` (used for server plugins), which makes the server fail to load it:
+>
+> ```
+> Plugin must export a default definition with an id and an effect or setup function.
+> ```
+>
+> If you already installed it that way:
+> 1. Open `~/.config/opencode/opencode.jsonc` and remove this plugin from the `plugins` array
+> 2. Declare it in the `plugins` array of `cli.json` as described above
+> 3. Restart opencode
+
+> **Troubleshooting**: If the plugin does not take effect, clear the plugin cache and restart. The V2 cache lives in `~/.cache/opencode/npm`, and the V1 cache in `~/.cache/opencode/packages`.
+
 ### 3.2 opencode 1.x
 
 **Option 1: Command (recommended)**

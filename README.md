@@ -83,6 +83,19 @@ opencode 2.x 的 TUI 插件由 `cli.json` 的 `plugins` 管理；添加条目后
 
 若文件中已有其他插件或配置，只需在现有 `plugins` 数组末尾追加这个对象条目。
 
+> **注意**：不要使用 `opencode plugin add` 安装本插件。该命令会把条目写入 `opencode.jsonc`（用于 server 插件），而本插件是 TUI 插件，会导致 server 插件加载报错：
+>
+> ```
+> Plugin must export a default definition with an id and an effect or setup function.
+> ```
+>
+> 如果已经用该命令安装过，请：
+> 1. 打开 `~/.config/opencode/opencode.jsonc`，从 `plugins` 数组中删除本插件条目
+> 2. 按上述方式在 `cli.json` 的 `plugins` 中声明
+> 3. 重启 opencode
+
+> **排障**：若插件未生效，可清理插件缓存后重启。V2 缓存在 `~/.cache/opencode/npm`，V1 在 `~/.cache/opencode/packages`。
+
 ### 3.2 opencode 1.x
 
 **方式一：命令安装（推荐）**
