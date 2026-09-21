@@ -60,7 +60,32 @@
 
 ## 3. 安装
 
-### 3.1 方式一：OpenCode 命令安装（推荐）
+本插件同时支持 opencode 1.x 与 2.x。
+
+### 3.1 opencode 2.x
+
+opencode 2.x 的 TUI 插件由 `cli.json` 的 `plugins` 管理；添加条目后，下次启动 opencode 时会自动安装并加载。
+
+创建或编辑 `~/.config/opencode/cli.json`，在 `plugins` 数组中追加以下条目：
+
+```json
+{
+  "plugins": [
+    {
+      "package": "opencode-visual-cache@latest",
+      "options": {
+        "enabled": true
+      }
+    }
+  ]
+}
+```
+
+若文件中已有其他插件或配置，只需在现有 `plugins` 数组末尾追加这个对象条目。
+
+### 3.2 opencode 1.x
+
+**方式一：命令安装（推荐）**
 
 在 OpenCode 中按 **`Ctrl + P`** 打开命令面板，搜索 **`install plugin`**，输入：
 
@@ -70,17 +95,15 @@ opencode-visual-cache@latest
 
 回车即可完成安装与配置。
 
-### 3.2 方式二：手动安装
+**方式二：手动安装**
 
-**1. 安装插件**
+1. 安装插件
 
 ```bash
 npm install -g opencode-visual-cache@latest
 ```
 
-**2. 配置 TUI 插件**
-
-创建或编辑 `~/.config/opencode/tui.jsonc`：
+2. 配置 TUI 插件 —— 创建或编辑 `~/.config/opencode/tui.jsonc`：
 
 ```jsonc
 {
