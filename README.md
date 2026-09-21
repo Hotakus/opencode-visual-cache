@@ -54,7 +54,7 @@
 - **斜杠命令**：`/cache-session` `/cache-session-back` `/cache-rate` `/cache-section` `/cache-config` `/cache-lang` 动态配置面板
 - **子代理缓存查看**：`/cache-session` 自动扫描并列出子代理，选择一个即可切换面板显示其缓存统计，支持 `/cache-session-back` 返回主会话
 - **已加载技能**：检测 session 中 LLM 调用 `skill` tool 的记录，展示已加载技能名及估算 Token 占用
-- **底部状态栏**：输入框提示行单行显示 命中率（含趋势）· Tokens · 余额，关闭侧边栏也能随时看到缓存统计，可经 `/cache-section` 隐藏
+- **底部状态栏**：输入框提示行单行显示 命中率（含趋势）· Tokens · 余额，关闭侧边栏也能随时看到缓存统计，可经 `/cache-section` 隐藏（关闭可让出输入框插槽，需重启 TUI 生效）
 
 ---
 
@@ -135,7 +135,7 @@ npm install -g opencode-visual-cache@latest
 
 ### 4.1 斜杠命令
 
-插件支持通过斜杠命令或命令面板（`Ctrl + P`）动态调整配置，所有设置即时生效并持久化：
+插件支持通过斜杠命令或命令面板（`Ctrl + P`）动态调整配置，设置即时生效并持久化（**底部状态栏**开关例外，见 [4.3 区块可见性](#43-区块可见性)）：
 
 | 命令 | 功能 | 使用方式 |
 |------|------|---------|
@@ -143,7 +143,7 @@ npm install -g opencode-visual-cache@latest
 | `/cache-session-back` | 返回主会话统计 | 从子代理缓存视图切回主会话 |
 | `/cache-currency` | 切换货币单位 | 从列表选择货币（USD / CNY / EUR / JPY / GBP / KRW），自动填入默认汇率 |
 | `/cache-rate` | 调整汇率乘数 | 输入自定义汇率（如 `7.2`），用于费用换算 |
-| `/cache-section` | 开关区块与边框 | 独立控制 Token 明细 / 模型与定价 / 估算 Token 分布 / 已加载技能 / 余额 / 底部状态栏 / 面板边框的显隐 |
+| `/cache-section` | 开关区块与边框 | 独立控制 Token 明细 / 模型与定价 / 估算 Token 分布 / 已加载技能 / 余额 / 底部状态栏 / 面板边框的显隐（底部状态栏开关需重启 TUI 生效） |
 | `/cache-config` | 查看当前配置 | 弹出当前货币、汇率、区块可见性状态 |
 | `/cache-lang` | 切换显示语言 | 从列表选择中文或 English，界面即时切换，无需重启 |
 | `/cache-balance` | 余额查询设置 | 选择余额提供商（菜单标注 Key 来源：用户 key / OpenCode / 未配置）/ 开关自动切换 |
@@ -184,7 +184,11 @@ npm install -g opencode-visual-cache@latest
 - **余额**：当前提供商账户余额（多提供商 + 自动切换）
 - **底部状态栏**：输入框提示行的 命中率 · Tokens · 余额 单行统计
 
-通过 `/cache-section` 切换后即时生效，无需重启。此外，该命令还可以开关面板的**外边框**——关闭后内容会顶格显示，释放额外空间。
+通过 `/cache-section` 切换后即时生效、无需重启（**底部状态栏**例外，见下）。此外，该命令还可以开关面板的**外边框**——关闭后内容会顶格显示，释放额外空间。
+
+> **底部状态栏开关需重启 TUI 生效**：在 opencode 1.x 下，底部状态栏通过重建宿主的 `session_prompt` 插槽实现，而该插槽为 replace 模式——**多个重建者会被同时渲染**。若同时使用其它同样重建 `session_prompt` 的插件（如 [`oh-my-openagent`](https://github.com/code-yeongyu/oh-my-openagent)），会出现**重复输入框**。
+>
+> 用 `/cache-section` 关闭**底部状态栏**并**重启 TUI**，本插件即让出该插槽，冲突消失（状态栏随之不再显示，提示行路径由宿主默认提供）。opencode 2.x 使用独立的 `prompt.footer.status` 插槽，不存在此冲突，无需任何设置。
 
 > **关于 Token 分布数值**：分布面板中"推理"为 API 返回的**精确值**；"系统提示"/"用户"/"子代理指令"/"Tool 调用"/"Tool 结果"为**估算值**——API 仅返回 token 总量，无法拆分各内容类型，插件按内容类型收集文本后基于字符计数近似估算，数值仅供参考。OpenCode 运行时注入的系统提示内容（环境信息、Skill 目录、工具 Schema 定义等，详见 [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts)、[`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)）不在此估算范围内。
 
