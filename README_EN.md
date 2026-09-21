@@ -54,7 +54,7 @@ Interested in sub-agent monitoring? Check out [opencode-subagent-magazine](https
 - **Slash Commands**: `/cache-session` `/cache-session-back` `/cache-rate` `/cache-section` `/cache-config` `/cache-lang` for live panel configuration
 - **Sub-Agent Cache View**: `/cache-session` auto-scans and lists sub-agents; select one to switch the panel stats. Use `/cache-session-back` to return to the main session
 - **Loaded Skills**: Detects `skill` tool calls in the session and displays loaded skill names with estimated token footprint
-- **Bottom Status Bar**: single-line hit rate (with trend) · Tokens · Balance in the prompt hint row — visible even with the sidebar closed; hide it anytime via `/cache-section`
+- **Bottom Status Bar**: single-line hit rate (with trend) · Tokens · Balance in the prompt hint row — visible even with the sidebar closed. **Off by default on opencode 1.x** (turning it on requires a TUI restart, see [4.3](#43-section-visibility)); shown by default on opencode 2.x
 
 ---
 
@@ -135,7 +135,7 @@ Open any session — the cache stats panel appears in the sidebar.
 
 ### 4.1 Slash Commands
 
-The plugin supports slash commands and command palette (`Ctrl + P`) for runtime configuration. All changes take effect immediately and are persisted:
+The plugin supports slash commands and command palette (`Ctrl + P`) for runtime configuration. Changes take effect immediately and are persisted (the **Bottom Bar** toggle is the exception on opencode 1.x — see [4.3 Section Visibility](#43-section-visibility)):
 
 | Command | Function | How to use |
 |---------|----------|------------|
@@ -143,7 +143,7 @@ The plugin supports slash commands and command palette (`Ctrl + P`) for runtime 
 | `/cache-session-back` | Return to main session | Switch back to main session from sub-agent cache view |
 | `/cache-currency` | Switch currency | Pick from a list (USD / CNY / EUR / JPY / GBP / KRW); default exchange rate auto-filled |
 | `/cache-rate` | Adjust exchange rate | Enter a custom rate (e.g. `7.2` for CNY) |
-| `/cache-section` | Toggle sections & border | Independently show/hide Detail, Model & Pricing, Token Distribution, Loaded Skills, Balance, Bottom Bar, or the panel border |
+| `/cache-section` | Toggle sections & border | Independently show/hide Detail, Model & Pricing, Token Distribution, Loaded Skills, Balance, Bottom Bar, or the panel border (Bottom Bar is off by default on opencode 1.x; turning it on requires a TUI restart) |
 | `/cache-config` | View current config | Displays currency, rate, and section visibility |
 | `/cache-lang` | Switch display language | Pick Chinese or English from the dialog — takes effect immediately, no restart needed |
 | `/cache-balance` | Balance query settings | Pick a balance provider (menu shows key source: user key / OpenCode / not set) / toggle auto-switch |
@@ -182,9 +182,13 @@ Three sub-sections can be toggled independently to save sidebar space:
 - **Estimated Token Dist.**: per-role token breakdown
 - **Loaded Skills**: skill names the LLM actually loaded via the `skill` tool, with estimated token counts
 - **Balance**: the selected provider's account balance (multi-provider with auto-switch)
-- **Bottom Status Bar**: the single-line hit rate · Tokens · Balance stats in the prompt hint row
+- **Bottom Status Bar**: the single-line hit rate · Tokens · Balance stats in the prompt hint row (**off by default on opencode 1.x**)
 
-Toggled via `/cache-section` — takes effect instantly, no restart required. The same command also toggles the panel **border**; turning it off removes the outline and padding so content fills the full width.
+Toggled via `/cache-section` — takes effect instantly with no restart (the **Bottom Status Bar** is the exception, see below). The same command also toggles the panel **border**; turning it off removes the outline and padding so content fills the full width.
+
+> **The Bottom Bar is off by default on opencode 1.x; turning it on requires a TUI restart**: on opencode 1.x the hint row can only carry the bar by rebuilding the host's `session_prompt` slot, and that slot uses replace mode — **every rebuilder's output is rendered side by side**. If another plugin rebuilds `session_prompt` as well (e.g. [`oh-my-openagent`](https://github.com/code-yeongyu/oh-my-openagent)), you get **duplicate input boxes**. This plugin therefore does not claim that slot by default, and the hint row shows the host's default path.
+>
+> Run `/cache-section` to turn the **Bottom Bar** on and **restart the TUI** to show the stats (this claims the slot and is mutually exclusive with such plugins). opencode 2.x uses a dedicated `prompt.footer.status` slot, so there is no such conflict and the bar is **shown by default**.
 
 > **About Token Dist. values**: "Reasoning" is an exact value from the API; the other rows (system / user / sub-agent instr / tool call / tool result) are **estimates** — the API only reports total token counts, not how they split across content types, so the plugin collects text per content type and approximates via character counting. Values are indicative only. OpenCode runtime-injected system prompt content (environment info, skill catalog, tool schema definitions — see [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts), [`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)) is not covered by these estimates.
 
