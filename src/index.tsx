@@ -459,7 +459,54 @@ function createSidebarSlot(api: TuiPluginApi, signals: PanelSignals): TuiSlotPlu
   }
 }
 
+/** 等待 KV 就绪（最多 1500ms）；供启动时读取偏好使用，超时按未就绪处理。 */
+async function kvReady(api: TuiPluginApi): Promise<void> {
+  if (api.kv.ready) return
+  const deadline = Date.now() + 1500
+  while (!api.kv.ready && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+/**
+ * 输入框 hint 行（session_prompt slot，replace 模式）：用宿主同一 Prompt 组件重渲染，
+ * 仅替换 hint 行左侧，插入 命中率 · 余额 · Tokens。是否注册由调用方在启动时决定。
+ */
+function createPromptSlot(api: TuiPluginApi, signals: PanelSignals): TuiSlotPlugin {
+  return {
+    order: 55,
+    slots: {
+      session_prompt(
+        _ctx: TuiSlotContext,
+        input: {
+          session_id: string
+          visible?: boolean
+          disabled?: boolean
+          on_submit?: () => void
+          ref?: (ref: TuiPromptRef | undefined) => void
+        },
+      ): JSX.Element {
+        return (
+          <api.ui.Prompt
+            sessionID={input.session_id}
+            visible={input.visible}
+            disabled={input.disabled}
+            onSubmit={input.on_submit}
+            ref={input.ref}
+            hint={<BottomStatusBar api={api} signals={signals} sessionId={input.session_id} />}
+            // 接管 session_prompt 后需透传宿主的 session_prompt_right 插槽，
+            // 否则 oc-tps 等依赖该插槽的插件无法显示；无注册时 Slot 为 null。
+            right={<api.ui.Slot name="session_prompt_right" session_id={input.session_id} />}
+          />
+        )
+      },
+    },
+  }
+}
+
 const tui: TuiPlugin = async (api: TuiPluginApi) => {
+  const KV_PREFIX = "cache_panel"
+
   // ── shared panel signals ──────────────────────────────────────
   const [currencySymbol, setCurrencySymbol] = createSignal("$")
   const [exchangeRate, setExchangeRate] = createSignal(1)
@@ -514,38 +561,17 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   // 输入框 hint 行（session_prompt slot，replace 模式）：
   // 用宿主同一 Prompt 组件重渲染输入框，仅替换 hint 行左侧——
   // 在路径与右侧 token/commands 提示之间插入 命中率 · 余额 · Tokens。
-  api.slots.register({
-    order: 55,
-    slots: {
-      session_prompt(
-        _ctx: TuiSlotContext,
-        input: {
-          session_id: string
-          visible?: boolean
-          disabled?: boolean
-          on_submit?: () => void
-          ref?: (ref: TuiPromptRef | undefined) => void
-        },
-      ): JSX.Element {
-        return (
-          <api.ui.Prompt
-            sessionID={input.session_id}
-            visible={input.visible}
-            disabled={input.disabled}
-            onSubmit={input.on_submit}
-            ref={input.ref}
-            hint={<BottomStatusBar api={api} signals={signals} sessionId={input.session_id} />}
-            // 接管 session_prompt 后需透传宿主的 session_prompt_right 插槽，
-            // 否则 oc-tps 等依赖该插槽的插件无法显示；无注册时 Slot 为 null。
-            right={<api.ui.Slot name="session_prompt_right" session_id={input.session_id} />}
-          />
-        )
-      },
-    },
-  })
+  // 关闭底部状态栏即让出该 slot：宿主对 session_prompt 使用 replace 模式，多个重建者的
+  // 输出会被全部渲染（不互相覆盖），与同样重建 session_prompt 的插件并存会产生重复输入框。
+  // slot 注册无法注销，故是否占用须在启动时确定——改动需重启 TUI 生效。
+  await kvReady(api)
+  let promptRebuild = true
+  try {
+    promptRebuild = api.kv.get<boolean>(`${KV_PREFIX}.section.bottom`, true) !== false
+  } catch {}
+  if (promptRebuild) api.slots.register(createPromptSlot(api, signals))
 
   // ── slash commands for runtime config ──
-  const KV_PREFIX = "cache_panel"
 
   // ── 语言偏好恢复：KV 就绪后优先用户设置（/cache-lang），覆盖自动识别 ──
   const restoreLang = () => {
@@ -764,8 +790,13 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
                 if (opt.value === "skills") signals.setSectionSkills(!cur)
                 if (opt.value === "balance") signals.setSectionBalance(!cur)
                 if (opt.value === "bottom")  signals.setSectionBottom(!cur)
-                const name = labels[opt.value] ?? opt.value
-                api.ui.toast({ message: t(!cur ? "sectionShown" : "sectionHidden", { s: name }) })
+                // 让出/占用 session_prompt 在启动时确定，重启 TUI 后才完全生效
+                if (opt.value === "bottom") {
+                  api.ui.toast({ message: t("bottomRestartHint"), duration: 6000 })
+                } else {
+                  const name = labels[opt.value] ?? opt.value
+                  api.ui.toast({ message: t(!cur ? "sectionShown" : "sectionHidden", { s: name }) })
+                }
               }
               dialog?.clear()
             }}
