@@ -1,6 +1,6 @@
 {
   "name": "opencode-visual-cache",
-  "version": "1.6.5",
+  "version": "1.7.0-beta.3",
   "description": "OpenCode TUI plugin displaying real-time token cache hit rate in the sidebar",
   "type": "module",
   "types": "dist/index.d.ts",
@@ -10,15 +10,16 @@
       "types": "./dist/server.d.ts"
     },
     "./tui": {
-      "import": "./dist/tui.js",
-      "config": {
-        "enabled": true
-      }
+      "import": "./tui/index.js"
+    },
+    "./v2": {
+      "import": "./dist/v2.js"
     }
   },
   "files": [
     "dist",
     "src",
+    "tui",
     "install.mjs",
     "README.md",
     "README_EN.md"
@@ -50,16 +51,22 @@
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.14.0",
     "@opencode-ai/sdk": ">=1.14.0",
-    "@opentui/core": ">=0.2.0",
-    "@opentui/solid": ">=0.2.0",
+    "@opencode/plugin": ">=2.0.0",
+    "@opentui/core": ">=0.5.8",
+    "@opentui/solid": ">=0.5.8",
     "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.16",
     "@opencode-ai/sdk": "^1.18.16",
-    "@opentui/core": "^0.5.1",
-    "@opentui/solid": "^0.5.1",
-    "@opentui/keymap": "^0.5.1",
+    "@opentui/core": "^0.5.8",
+    "@opentui/solid": "^0.5.8",
+    "@opentui/keymap": "^0.5.8",
     "esbuild": "^0.25.0",
     "esbuild-plugin-solid": "^0.5.0",
     "tsx": "^4.22.3",
