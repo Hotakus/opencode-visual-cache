@@ -21,9 +21,13 @@ function extractToolParts(msg: Record<string, any>): Array<Record<string, any>> 
   return msg.content.filter((p: Record<string, any>) => p?.type === "tool")
 }
 
-/** 读取 OpenAI 的 OAuth access token（存放于 auth.json，与 provider.key 分开）。
+/** 读取 OpenCode auth.json 中某个 provider 的凭据：
+ *  - `oauth` 类型 → `access` token（如 OpenAI 订阅登录）
+ *  - `api` 类型   → `key`（如 DeepSeek 等 API key 提供商）
+ *  V2 的 provider list 不暴露凭据（Provider.Info 无 key 字段），
+ *  这里作为自动复用 OpenCode 已认证凭据的兜底。
  *  V2 无 state 路径 API，依次尝试 XDG data 目录、~/.local/share；全部失败返回空串。 */
-function readOpenAIOAuthToken(): string {
+function readAuthCredential(providerID: string): string {
   try {
     const loader = typeof process !== "undefined" ? process?.getBuiltinModule : undefined
     const fs = loader?.("node:fs") as { readFileSync(path: string, encoding: "utf8"): string } | undefined
@@ -38,10 +42,11 @@ function readOpenAIOAuthToken(): string {
       if (!path) continue
       try {
         const auth = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, unknown>
-        const openai = auth.openai
-        if (openai && typeof openai === "object") {
-          const record = openai as Record<string, unknown>
+        const entry = auth[providerID]
+        if (entry && typeof entry === "object") {
+          const record = entry as Record<string, unknown>
           if (record.type === "oauth" && typeof record.access === "string") return record.access
+          if (record.type === "api" && typeof record.key === "string") return record.key
         }
       } catch { /* try the next known auth path */ }
     }
@@ -51,8 +56,9 @@ function readOpenAIOAuthToken(): string {
   }
 }
 
-/** V2 版 findOpencodeKey：从 V2 provider list 找 OpenCode 已认证的 key（对齐 V1 api.state.provider）。
- *  OpenAI 优先读取 auth.json 的 OAuth token；其他 provider 读取 provider.key / provider.options.apiKey。
+/** V2 版 findOpencodeKey：优先使用 V2 provider list 暴露的 key（宿主提供时），
+ *  否则回退读取 auth.json 的凭据——V2 的 Provider.Info 不含 key 字段，
+ *  provider list 拿不到 key 时以 auth.json 为准（对齐 V1 api.state.provider 的效果）。
  *  导出供 index.tsx 的余额轮询复用。 */
 export function findOpencodeKeyV2(context: Context, provider: BalanceProvider): string {
   try {
@@ -60,17 +66,14 @@ export function findOpencodeKeyV2(context: Context, provider: BalanceProvider): 
     const id = provider.id.toLowerCase()
     const hit = provs.find((p) => String(p.id ?? "").toLowerCase() === id)
       ?? provs.find((p) => String(p.id ?? "").toLowerCase().startsWith(id))
-    if (id === "openai") {
-      const oauth = readOpenAIOAuthToken()
-      if (oauth) return oauth
+    if (hit) {
+      const k = typeof hit.key === "string" ? hit.key : ""
+      if (k) return k
+      const optionKey = typeof hit.options?.apiKey === "string" ? hit.options.apiKey : ""
+      if (optionKey) return optionKey
     }
-    if (!hit) return ""
-    const k = typeof hit.key === "string" ? hit.key : ""
-    if (k) return k
-    return typeof hit.options?.apiKey === "string" ? hit.options.apiKey : ""
-  } catch {
-    return ""
-  }
+  } catch { /* fall through to auth.json */ }
+  return readAuthCredential(provider.id)
 }
 
 /** 当前路由 sessionID（V2 ui.router.current()；Route = { type: "session", sessionID }）。 */
