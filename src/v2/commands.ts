@@ -3,11 +3,7 @@ import type { PanelApi, PanelSignals } from "../panel/panel-api"
 import { CURRENCIES, DEFAULT_RATES, visualPadEnd } from "../core"
 import { balanceProviders, getBalanceProvider, maskKey, type BalanceProvider } from "../balance-providers"
 import { LANG_META, createT, type LangCode } from "../i18n"
-
-declare const process: {
-  env: Record<string, string | undefined>
-  getBuiltinModule?: (id: string) => unknown
-} | undefined
+import { resolveCredentialToken } from "./credentials"
 
 const KV_PREFIX = "cache_panel"
 
@@ -21,44 +17,9 @@ function extractToolParts(msg: Record<string, any>): Array<Record<string, any>> 
   return msg.content.filter((p: Record<string, any>) => p?.type === "tool")
 }
 
-/** 读取 OpenCode auth.json 中某个 provider 的凭据：
- *  - `oauth` 类型 → `access` token（如 OpenAI 订阅登录）
- *  - `api` 类型   → `key`（如 DeepSeek 等 API key 提供商）
- *  V2 的 provider list 不暴露凭据（Provider.Info 无 key 字段），
- *  这里作为自动复用 OpenCode 已认证凭据的兜底。
- *  V2 无 state 路径 API，依次尝试 XDG data 目录、~/.local/share；全部失败返回空串。 */
-function readAuthCredential(providerID: string): string {
-  try {
-    const loader = typeof process !== "undefined" ? process?.getBuiltinModule : undefined
-    const fs = loader?.("node:fs") as { readFileSync(path: string, encoding: "utf8"): string } | undefined
-    if (!fs) return ""
-    const home = typeof process !== "undefined" ? (process?.env.HOME || process?.env.USERPROFILE || "") : ""
-    const dataHome = typeof process !== "undefined" ? process?.env.XDG_DATA_HOME : undefined
-    const paths = [
-      dataHome ? `${dataHome}/opencode/auth.json` : "",
-      home ? `${home}/.local/share/opencode/auth.json` : "",
-    ]
-    for (const path of paths) {
-      if (!path) continue
-      try {
-        const auth = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, unknown>
-        const entry = auth[providerID]
-        if (entry && typeof entry === "object") {
-          const record = entry as Record<string, unknown>
-          if (record.type === "oauth" && typeof record.access === "string") return record.access
-          if (record.type === "api" && typeof record.key === "string") return record.key
-        }
-      } catch { /* try the next known auth path */ }
-    }
-    return ""
-  } catch {
-    return ""
-  }
-}
-
 /** V2 版 findOpencodeKey：优先使用 V2 provider list 暴露的 key（宿主提供时），
- *  否则回退读取 auth.json 的凭据——V2 的 Provider.Info 不含 key 字段，
- *  provider list 拿不到 key 时以 auth.json 为准（对齐 V1 api.state.provider 的效果）。
+ *  否则解析宿主已认证凭据——V2 的 Provider.Info 不含 key 字段，且凭据保存在
+ *  宿主 SQLite（credential 表），auth.json 仅作迁移遗留兜底（见 credentials.ts）。
  *  导出供 index.tsx 的余额轮询复用。 */
 export function findOpencodeKeyV2(context: Context, provider: BalanceProvider): string {
   try {
@@ -72,8 +33,8 @@ export function findOpencodeKeyV2(context: Context, provider: BalanceProvider): 
       const optionKey = typeof hit.options?.apiKey === "string" ? hit.options.apiKey : ""
       if (optionKey) return optionKey
     }
-  } catch { /* fall through to auth.json */ }
-  return readAuthCredential(provider.id)
+  } catch { /* fall through to stored credentials */ }
+  return resolveCredentialToken(provider.id)
 }
 
 /** 当前路由 sessionID（V2 ui.router.current()；Route = { type: "session", sessionID }）。 */

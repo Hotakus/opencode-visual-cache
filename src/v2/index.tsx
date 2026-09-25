@@ -8,6 +8,7 @@ import type { BalanceState, PanelApi, PanelSignals } from "../panel/panel-api"
 import { StatusView } from "./status"
 import { mapTheme } from "./theme"
 import { makeCommands, findOpencodeKeyV2 } from "./commands"
+import { credentialsDbReady } from "./credentials"
 import { getBalanceProvider } from "../balance-providers"
 import { LANG_META, detectLang, type LangCode } from "../i18n"
 
@@ -96,8 +97,12 @@ function PluginRoot(props: {
   // ── 余额轮询（对齐 V1 tui() pollBalance）：手动 key 优先，缺失时自动复用 OpenCode 已认证 key ──
   const pollBalance = async () => {
     const provider = getBalanceProvider(props.signals.balanceProviderId())
-    const key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
-      || findOpencodeKeyV2(props.context, provider)
+    let key = props.api.kv.get<string>(`${KV_PREFIX}.balance.${provider.id}.key`, "")
+    if (!key) {
+      // V2 凭据保存在宿主 SQLite：等库就绪再解析，避免首轮回退到过期的 auth.json
+      await credentialsDbReady()
+      key = findOpencodeKeyV2(props.context, provider)
+    }
     const set = props.signals.setBalanceState
     if (props.signals.balanceUnsupported()) { set({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
     if (!key) { set({ status: "idle", data: null, lastFetch: 0, error: undefined, key: undefined }); return }
