@@ -93,7 +93,7 @@ export function readDbCredential(integrationId: string): CredentialValue | undef
   if (!db || !integrationId) return undefined
   try {
     const row = db.query(
-      "SELECT value FROM credential WHERE integration_id = ? AND active = 1 ORDER BY time_updated DESC LIMIT 1",
+      "SELECT value FROM credential WHERE integration_id = ? AND active IS NOT 0 ORDER BY time_updated DESC LIMIT 1",
     ).get(integrationId)
     return parseCredentialValue(row?.value)
   } catch {
@@ -125,11 +125,11 @@ export function readAuthJsonCredential(providerID: string): CredentialValue | un
   return undefined
 }
 
-/** 凭据 → 余额查询 token（oauth 用 access，api 用 key）。 */
+/** 凭据 → 余额查询 token（oauth 用 access，api/key 用 key）。 */
 export function credentialToken(value: CredentialValue | undefined): string {
   if (!value) return ""
   if (value.type === "oauth" && typeof value.access === "string") return value.access
-  if (value.type === "api" && typeof value.key === "string") return value.key
+  if ((value.type === "api" || value.type === "key") && typeof value.key === "string") return value.key
   return ""
 }
 
