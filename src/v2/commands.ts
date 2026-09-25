@@ -32,6 +32,8 @@ export function findOpencodeKeyV2(context: Context, provider: BalanceProvider): 
       if (k) return k
       const optionKey = typeof hit.options?.apiKey === "string" ? hit.options.apiKey : ""
       if (optionKey) return optionKey
+      // 用 OpenCode provider 的 integration_id 去查 SQLite（而非 balance provider id）
+      if (hit.id) return resolveCredentialToken(hit.id)
     }
   } catch { /* fall through to stored credentials */ }
   return resolveCredentialToken(provider.id)
