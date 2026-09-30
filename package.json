@@ -18,7 +18,6 @@
   },
   "files": [
     "dist",
-    "src",
     "tui",
     "install.mjs",
     "README.md",
@@ -28,7 +27,7 @@
     "opencode-visual-cache": "install.mjs"
   },
   "scripts": {
-    "build": "tsc && node build.tui.mjs",
+    "build": "tsc --emitDeclarationOnly && node build.tui.mjs",
     "build:tui": "node build.tui.mjs",
     "typecheck": "tsc --noEmit",
     "test:balance": "tsx tests/codex-balance.test.ts",
