@@ -59,6 +59,18 @@
   "peerDependenciesMeta": {
     "@opencode/plugin": {
       "optional": true
+    },
+    "@opencode-ai/plugin": {
+      "optional": true
+    },
+    "@opencode-ai/sdk": {
+      "optional": true
+    },
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
     }
   },
   "devDependencies": {
