@@ -1,3 +1,5 @@
+import type { ColorInput } from "@opentui/core"
+
 /**
  * V2 (opencode2) TUI plugin API — 最小本地类型（实验版）。
  * 运行时由 opencode2 提供，此处仅用于本地类型检查；
@@ -13,21 +15,21 @@ export interface Theme {
   readonly hue: {
     /** V1 primary 的 V2 等价（v1-migrate.ts：interactive = hues.byToken.primary）。
      *  取 300：更亮（暗背景下 400/500 偏深）。 */
-    readonly interactive: { readonly 300: string }
+    readonly interactive: { readonly 300: ColorInput }
     /** 主题强调色别名。 */
-    readonly accent: { readonly 500: string }
+    readonly accent: { readonly 500: ColorInput }
   }
   /** 文本色 token 存在两代命名：base/muted 与 default/subdued。宿主按其中一代提供，
    *  读取时以 base/muted 为准，故全部声明为可选。 */
   readonly text: {
-    readonly base?: string
-    readonly muted?: string
-    readonly default?: string
-    readonly subdued?: string
+    readonly base?: ColorInput
+    readonly muted?: ColorInput
+    readonly default?: ColorInput
+    readonly subdued?: ColorInput
     readonly feedback: {
-      readonly success: { readonly base?: string; readonly default?: string }
-      readonly error: { readonly base?: string; readonly default?: string }
-      readonly warning: { readonly base?: string; readonly default?: string }
+      readonly success: { readonly base?: ColorInput; readonly default?: ColorInput }
+      readonly error: { readonly base?: ColorInput; readonly default?: ColorInput }
+      readonly warning: { readonly base?: ColorInput; readonly default?: ColorInput }
     }
   }
 }

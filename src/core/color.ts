@@ -23,6 +23,25 @@ export function rgb(raw: unknown): { r: number; g: number; b: number } | null {
   return null
 }
 
+/** Preserve alpha from both hex colours and the host's RGBA objects. */
+function alpha(raw: unknown): number {
+  if (typeof raw === "string" && raw.startsWith("#") && raw.length === 9) {
+    return parseInt(raw.slice(7), 16)
+  }
+  if (raw && typeof raw === "object") {
+    const a = (raw as { a?: unknown }).a
+    if (typeof a === "number" && Number.isFinite(a)) {
+      return Math.round(Math.max(0, Math.min(1, a)) * 255)
+    }
+  }
+  return 255
+}
+
+function toHex(r: number, g: number, b: number, a = 255): string {
+  const channels = a === 255 ? [r, g, b] : [r, g, b, a]
+  return "#" + channels.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("")
+}
+
 /** HSL saturation of an RGB color (0–1). */
 export function saturation(r: number, g: number, b: number): number {
   const max = Math.max(r, g, b) / 255
@@ -43,7 +62,7 @@ export function desaturateTo(raw: unknown, maxSat: number, fallback: string): st
   const sat = saturation(c.r, c.g, c.b)
   if (sat <= maxSat) {
     // already muted — return as hex
-    return "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("")
+    return toHex(c.r, c.g, c.b, alpha(raw))
   }
   /**
    * Binary search for the optimal grey-mix ratio α (0…1).
@@ -69,7 +88,7 @@ export function desaturateTo(raw: unknown, maxSat: number, fallback: string): st
   const nr = Math.round(c.r + (luma - c.r) * hi)
   const ng = Math.round(c.g + (luma - c.g) * hi)
   const nb = Math.round(c.b + (luma - c.b) * hi)
-  return "#" + [nr, ng, nb].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
+  return toHex(nr, ng, nb, alpha(raw))
 }
 
 /** Darken a hex colour by multiplying each channel by `factor` (0–1). */
@@ -79,7 +98,7 @@ export function dimColor(hex: string, factor = 0.5): string {
   const r = Math.round(c.r * factor)
   const g = Math.round(c.g * factor)
   const b = Math.round(c.b * factor)
-  return "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")).join("")
+  return toHex(r, g, b, alpha(hex))
 }
 
 // Morandi fallbacks — used when a theme colour cannot be resolved
