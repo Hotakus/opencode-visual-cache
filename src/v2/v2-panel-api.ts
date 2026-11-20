@@ -18,7 +18,7 @@ export function createPanelApi(context: Context, db = { ready: credentialsDbRead
   const deleted = new Set<string>()
   const syncInFlight = new Map<string, Promise<void>>()
   const pagedMessages = new Map<string, Record<string, any>[]>()
-  // Sub-agent totals: one read of the host database per refresh, shared by the panel and the footer (PB2-26).
+  // Sub-agent totals: one read of the host database per refresh, shared by the panel and the footer.
   // Only when that database cannot be read are the records fetched from the server instead; a message history never is.
   const [subtreeVersion, setSubtreeVersion] = createSignal(0)
   let snapshots = new Map<string, readonly PanelSession[] | undefined>()
