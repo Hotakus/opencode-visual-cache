@@ -50,7 +50,7 @@ export function discoverDescendantSessions(rootSid: string, opts: DiscoverOpts):
   const queue = [rootSid]
   const visited = new Set([rootSid])
   const all = opts.listSessions?.() ?? []
-  // grouped by parent once: a scan of the whole list for every queued session froze large trees (PB2-26)
+  // grouped by parent once: a scan of the whole list for every queued session froze large trees
   const byParent = new Map<string, (typeof all)[number][]>()
   for (const s of all) {
     const p = s.parentID
