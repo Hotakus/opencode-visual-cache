@@ -47,7 +47,7 @@ export function StatusView(props: {
   })
 
   const stats = createMemo(() => collectLastHitRate(props.context, props.sessionID))
-  // the sub-agent total is re-read when the adapter publishes a refresh or the session record arrives, never on every message event (PB2-26)
+  // the sub-agent total is re-read when the adapter publishes a refresh or the session record arrives, never on every message event
   const tokens = createMemo(() => {
     void props.context.data.session.get(props.sessionID)
     const rows = props.api.state.session.subtree?.(props.sessionID)
