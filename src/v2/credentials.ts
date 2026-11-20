@@ -88,6 +88,20 @@ export function credentialsDbReady(): Promise<void> {
 // 模块加载即预热（Bun 宿主），首次轮询无需等完整初始化流程
 void openDatabase()
 
+/** One statement for a session and all its descendants (rows of `session_v2`); no rows when the session itself has none. */
+export const SESSION_SUBTREE_SQL =
+  "WITH RECURSIVE t(id) AS (SELECT id FROM session_v2 WHERE id = ? UNION SELECT s.id FROM session_v2 s JOIN t ON s.parent_id = t.id) SELECT s.id, s.parent_id, s.title, s.agent, s.model, s.cost, s.tokens_input, s.tokens_output, s.tokens_reasoning, s.tokens_cache_read, s.tokens_cache_write FROM session_v2 s JOIN t ON s.id = t.id"
+
+/** The rows of that statement, or undefined when the host database cannot be read (not Bun, no file, other schema). */
+export function readSessionSubtree(rootId: string): Record<string, unknown>[] | undefined {
+  if (!db) return undefined
+  try {
+    return db.query(SESSION_SUBTREE_SQL).all(rootId)
+  } catch {
+    return undefined
+  }
+}
+
 /** 读取宿主 SQLite 中该 integration 的启用凭据（库未就绪/无记录时 undefined）。 */
 export function readDbCredential(integrationId: string): CredentialValue | undefined {
   if (!db || !integrationId) return undefined

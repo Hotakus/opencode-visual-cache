@@ -11,6 +11,7 @@ export interface PanelSession {
   model?: { providerID?: string; id?: string }
   tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
   cost?: number
+  parentID?: string
   [key: string]: unknown
 }
 
@@ -29,6 +30,11 @@ export interface PanelApi {
       get(id: string): PanelSession | undefined
       /** V1 返回 sdk/v2 的 Message、V2 返回 SessionMessageInfo——统一放宽 */
       messages(id: string): readonly any[]
+      list?(): readonly PanelSession[]
+      isDeleted?(id: string): boolean
+      syncMessages?(id: string): Promise<void>
+      /** V2: the records of rootId and of every descendant, read in one go; undefined = use list() and the store */
+      subtree?(rootId: string): readonly PanelSession[] | undefined
     }
     provider: readonly Record<string, any>[]
     config: any
@@ -41,6 +47,7 @@ export interface PanelApi {
   renderer: { terminalWidth: number }
   keys: { formatBindings(binding: unknown): string | undefined }
   tuiConfig: { keybinds: { get(command: string): unknown } }
+  dispose?(): void
 }
 
 export interface BalanceState {

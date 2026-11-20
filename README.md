@@ -46,7 +46,7 @@
 - **模型定价**：显示当前模型的输入 / 缓存读 / 缓存写单价（从 provider 配置动态读取）
 - **折叠面板**：主标题默认折叠，点击展开；明细、模型、分布各自独立折叠
 - **颜色自适应**：命中率 ≥85% 绿 · ≥70% 橙 · <70% 红，颜色从主题色自动去饱和
-- **Token 分布**：按角色（系统提示 / 用户 / 子代理指令 / Tool 调用 / Tool 结果）展示估算 Token 占比
+- **Token 分布**：按角色（系统提示 / 用户 / 子代理 / Tool 调用 / Tool 结果）展示 Token 占比
 - **折叠记忆**：折叠状态持久化，重启后保持
 - **语言适配**：支持 中文 / English / 日本語 / 한국어，自动检测系统语言，`/cache-lang` 运行时切换，偏好持久化优先
 - **多币种**：通过 `/cache-currency` 切换货币，费用和节省同步换算
@@ -190,7 +190,7 @@ npm install -g opencode-visual-cache@latest
 >
 > 用 `/cache-section` 开启**底部状态栏**并**重启 TUI** 即可显示统计（此时会占用该插槽，与同类插件互斥）。opencode 2.x 使用独立的 `prompt.footer.status` 插槽，不存在此冲突，**默认显示**。
 
-> **关于 Token 分布数值**：分布面板中"推理"为 API 返回的**精确值**；"系统提示"/"用户"/"子代理指令"/"Tool 调用"/"Tool 结果"为**估算值**——API 仅返回 token 总量，无法拆分各内容类型，插件按内容类型收集文本后基于字符计数近似估算，数值仅供参考。OpenCode 运行时注入的系统提示内容（环境信息、Skill 目录、工具 Schema 定义等，详见 [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts)、[`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)）不在此估算范围内。
+> **关于 Token 分布数值**：分布面板中"推理"与"子代理"（汇总各子代理会话非推理 Token 总量，无 API 用量时回退指令文本估算）采用 API 返回值；"系统提示"/"用户"/"Tool 调用"/"Tool 结果"为**估算值**——API 仅返回 token 总量，无法拆分各内容类型，插件按内容类型收集文本后基于字符计数近似估算，数值仅供参考。OpenCode 运行时注入的系统提示内容（环境信息、Skill 目录、工具 Schema 定义等，详见 [`system.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts)、[`tools.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/tools.ts)）不在此估算范围内。
 
 ### 4.4 余额查询
 
@@ -215,7 +215,7 @@ npm install -g opencode-visual-cache@latest
 >
 > **希望支持**：已调研确认具备可行性的候选提供商，尚未实现。智谱 GLM 仅有社区逆向的非官方端点（无稳定性保障）。
 >
-> **统计口径**：命中率 = 缓存读 /（新鲜输入 + 缓存读 + 缓存写），与业界（OpenAI / Anthropic / Bedrock）口径一致；明细中「未命中」= 新鲜输入 + 缓存写。底部栏的 Tokens 为输入侧总量（不含输出）。未单独报告缓存写的提供商（如 DeepSeek）自动退化为 hit/miss 口径。
+> **统计口径**：命中率 = 缓存读 /（新鲜输入 + 缓存读 + 缓存写），与业界（OpenAI / Anthropic / Bedrock）口径一致；明细中「未命中」= 新鲜输入 + 缓存写。底部栏的 Tokens 为会话及其全部子代理的总量：输入 + 输出 + 推理 + 缓存读 + 缓存写。未单独报告缓存写的提供商（如 DeepSeek）自动退化为 hit/miss 口径。
 >
 > **余额显示**：侧边栏与底部栏共享同一份余额数据，两处显示一致。当前提供商不支持余额查询时，侧边栏显示提示、底部栏隐藏余额项。
 
