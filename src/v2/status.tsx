@@ -1,9 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 
-import { createMemo, For, onMount, Show } from "solid-js"
+import { createMemo, For, onMount, Show, untrack } from "solid-js"
 import type { Context } from "./types"
 import type { PanelApi, PanelSignals } from "../panel/panel-api"
-import { collectLastHitRate } from "./data"
+import { collectLastHitRate, collectSubtreeTokens } from "./data"
 import { desaturateTo, fmtCompact, formatBalanceText, MAX_SAT, FALLBACK, visualWidth } from "../core"
 import { createT } from "../i18n"
 import { mapTheme } from "./theme"
@@ -47,6 +47,12 @@ export function StatusView(props: {
   })
 
   const stats = createMemo(() => collectLastHitRate(props.context, props.sessionID))
+  // the sub-agent total is re-read when the adapter publishes a refresh or the session record arrives, never on every message event
+  const tokens = createMemo(() => {
+    void props.context.data.session.get(props.sessionID)
+    const rows = props.api.state.session.subtree?.(props.sessionID)
+    return untrack(() => collectSubtreeTokens(props.context, props.sessionID, props.api.state.session.isDeleted, rows))
+  })
 
   const hitColor = createMemo(() => {
     const r = stats().hitRate
@@ -84,7 +90,7 @@ export function StatusView(props: {
       out.push({ text: " " + (tr > 0 ? "\u2191" : "\u2193") + Math.abs(tr).toFixed(1) + "%", color: tr > 0 ? pal().success : pal().error })
     }
     out.push({ text: " \u00b7 " + t("barTok") + " ", color: pal().muted })
-    out.push({ text: s ? fmtCompact(s.input + s.read + s.write) : "--", color: pal().text })
+    out.push({ text: s ? fmtCompact(tokens()) : "--", color: pal().text })
     if (!props.signals.balanceUnsupported()) {
       out.push({ text: " \u00b7 " + t("barBal") + " ", color: pal().muted })
       out.push({ text: balanceText(), color: pal().text })

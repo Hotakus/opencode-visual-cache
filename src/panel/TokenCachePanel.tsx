@@ -7,7 +7,7 @@ import type { Part, TextPart, ToolPart, FilePart, ReasoningPart } from "@opencod
 import { createMemo, createSignal, createEffect, onMount, onCleanup, Show, For, untrack } from "solid-js"
 import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceDetail, type BalanceDetailKey, type BalanceEntry, type BalanceProvider } from "../balance-providers"
 import { createT, type LangCode, type Translation } from "../i18n"
-import { MAX_SAT, FALLBACK, desaturateTo, dimColor, fmt, fmtCost, num, estimateTokens, progressBar, visualWidth, visualPadEnd, truncateVisual, formatBalanceText, type TokenDist } from "../core"
+import { MAX_SAT, FALLBACK, desaturateTo, dimColor, fmt, fmtCost, num, estimateTokens, progressBar, visualWidth, visualPadEnd, truncateVisual, formatBalanceText, extractSubagentSessionId, aggregateSubtreeTotals, readSingleSessionTotals, throttle, withSnapshot, type TokenDist } from "../core"
 import { PLUGIN_VERSION } from "../_version"
 import type { PanelApi, PanelSignals } from "./panel-api"
 
@@ -114,7 +114,7 @@ export function TokenCachePanel(props: {
   // a view switch), hasDistData flips to false and the distribution
   // block disappears.  Keep the last valid snapshot so the UI stays
   // stable until the next successful computation arrives.
-  const [lastDist, setLastDist] = createSignal<TokenDist>({
+  const [lastDist, setLastDist] = createSignal<TokenDist & { sid?: string }>({
     system: 0, user: 0, agent: 0, toolCall: 0, toolResult: 0,
     output: 0, reasoning: 0, apiOutput: 0, apiInput: 0, stepCost: 0, stepCount: 0,
   })
@@ -131,6 +131,11 @@ export function TokenCachePanel(props: {
     hasSkills: false,
   })
   const [refreshTick, setRefreshTick] = createSignal(0)
+  const bumpRefresh = throttle(() => setRefreshTick(v => v + 1))
+  const [historyLoaded, setHistoryLoaded] = createSignal(0)
+  const syncRequested = new Set<string>()
+  let alive = true
+  onCleanup(() => { alive = false })
 
   // 当前 provider 显示名（余额查询状态为共享信号，见 PanelSignals.balanceState）
   const providerName = createMemo(() => getBalanceProvider(balanceProviderId()).name)
@@ -188,6 +193,42 @@ export function TokenCachePanel(props: {
     }
   })
 
+  // Sub-agent totals are re-read on a new snapshot, when the viewed session's history has loaded or on a provider change (with no
+  // snapshot, as on V1: on the throttled refresh), never on every message event. Only the viewed session loads its history.
+  const subtreeData = createMemo(() => {
+    const sid = props.signals.overrideSessionId() ?? props.sessionId
+    const rows = props.api.state.session.subtree?.(sid)
+    if (!rows) void refreshTick()
+    void historyLoaded()
+    const providers = props.api.state.provider
+    return untrack(() => {
+      const isDeleted = (id: string) => props.api.state.session.isDeleted?.(id) === true
+      const getMessages = (id: string) => {
+        if (isDeleted(id)) return []
+        const messages = props.api.state.session.messages(id) ?? []
+        const sync = props.api.state.session.syncMessages
+        if (sync && id === sid && !syncRequested.has(id)) {
+          syncRequested.add(id)
+          try {
+            void Promise.resolve(sync(id)).then(() => { if (alive) { setHistoryLoaded((v) => v + 1); bumpRefresh() } }, () => syncRequested.delete(id))
+          } catch { syncRequested.delete(id) }
+        }
+        return messages
+      }
+      const subtreeOpts = withSnapshot({ getMessages, getToolParts: (m) => { try { return props.api.state.part(m.id).filter((p) => { const id = extractSubagentSessionId(p as Record<string, any>); return id === undefined || !isDeleted(id) }) } catch { return [] } }, getSession: (x) => isDeleted(x) ? undefined : props.api.state.session.get?.(x), listSessions: () => (props.api.state.session.list?.() ?? []).filter((x) => !isDeleted(x.id)) }, sid, rows)
+      const subtree = aggregateSubtreeTotals(sid, subtreeOpts)
+      const rootTotals = readSingleSessionTotals(sid, subtreeOpts)
+      const ratesFor = (id: string, dPid: string, dMid: string) => { const s = subtreeOpts.getSession(id); let p = dPid || (s?.model?.providerID ?? ""), m = dMid || (s?.model?.id ?? ""); if (!p || !m) for (const msg of (subtreeOpts.getMessages(id) ?? []) as Message[]) if (msg.role === "assistant" && (msg as AssistantMessage).providerID && (msg as AssistantMessage).modelID) { p = (msg as AssistantMessage).providerID; m = (msg as AssistantMessage).modelID } const prov = Array.isArray(providers) ? providers.find((x) => x.id === p) : undefined; const c = prov?.models?.[m]?.cost; return c ? { inR: num(c.input), crR: num(c.cache?.read), cwR: num(c.cache?.write) } : undefined }
+      let childSaved = 0
+      for (const d of subtree.descendants) {
+        const cRead = readSingleSessionTotals(d.id, subtreeOpts).read
+        const cr = ratesFor(d.id, "", "")
+        if (cRead > 0 && cr && cr.inR > cr.crR) childSaved += (cRead * (cr.inR - cr.crR)) / 1_000_000
+      }
+      return { subtree, rootTotals, ratesFor, childSaved }
+    })
+  })
+
   createEffect(() => {
     const sid = props.signals.overrideSessionId() ?? props.sessionId
     void refreshTick()
@@ -229,13 +270,13 @@ export function TokenCachePanel(props: {
         pid = (msg as AssistantMessage).providerID; mid = (msg as AssistantMessage).modelID
       }
     }
-    let saved = 0, inputRate = 0, cacheReadRate = 0, cacheWriteRate = 0
-    if (read > 0 && pid && mid && Array.isArray(props.api.state.provider)) for (const provider of props.api.state.provider) {
-      if (provider.id !== pid) continue
-      const model = provider.models[mid]; if (!model?.cost) continue
-      inputRate = num(model.cost.input); cacheReadRate = num(model.cost.cache?.read); cacheWriteRate = num(model.cost.cache?.write)
-      if (inputRate > cacheReadRate) saved = (read * (inputRate - cacheReadRate)) / 1_000_000
-      break
+    const { subtree, rootTotals, ratesFor, childSaved } = subtreeData()
+    input = subtree.input; read = subtree.read; write = subtree.write; output = subtree.output; cost = rootTotals.cost
+    let saved = childSaved, inputRate = 0, cacheReadRate = 0, cacheWriteRate = 0
+    const rr = ratesFor(sid, pid, mid)
+    if (rr && read > 0) {
+      inputRate = rr.inR; cacheReadRate = rr.crR; cacheWriteRate = rr.cwR
+      if (rootTotals.read > 0 && rr.inR > rr.crR) saved += (rootTotals.read * (rr.inR - rr.crR)) / 1_000_000
     }
     const hitRate = lastMsgHitRate >= 0 ? lastMsgHitRate : 0
     // 总命中率分母含缓存写（业界口径：read / (input+read+write)）
@@ -268,20 +309,12 @@ export function TokenCachePanel(props: {
           } else if (msg.role === "assistant") {
             const am = msg as AssistantMessage
             dist.output += num(am.tokens?.output)
-            dist.reasoning += num(am.tokens?.reasoning)
             let parts: readonly Part[] = []; try { parts = props.api.state.part(msg.id) } catch {}
             for (const p of parts) {
               if (p.type === "tool") {
                 const tp = p as any; let rawInput = ""
                 try { rawInput = tp.state.raw ?? (tp.state.input != null ? JSON.stringify(tp.state.input) : "") } catch {}
                 if (rawInput) dist.toolCall += estimateTokens(rawInput)
-                // 子代理委托（task 工具）：任务描述计入子代理指令（1.15.x 无 subtask part）
-                if (tp.tool === "task" && tp.state?.input) {
-                  const ti = tp.state.input
-                  const prompt = typeof ti.prompt === "string" ? ti.prompt : ""
-                  const desc = typeof ti.description === "string" ? ti.description : ""
-                  dist.agent += estimateTokens(prompt || desc)
-                }
                 if (tp.state.status === "completed") { const c = tp.state; if (c.output) dist.toolResult += estimateTokens(c.output) }
                 else if (tp.state.status === "error") { const e = tp.state; if (e.error) dist.toolResult += estimateTokens(e.error) }
                 if (tp.tool === "skill" && tp.state.status === "completed") {
@@ -302,7 +335,7 @@ export function TokenCachePanel(props: {
                     }
                   }
                 }
-              } else if (p.type === "subtask") { const sub = p as any; dist.agent += estimateTokens(sub.prompt || sub.description || "") }
+              }
             }
           }
         }
@@ -313,6 +346,8 @@ export function TokenCachePanel(props: {
           if (tok && ((tok.input ?? 0) > 0 || (tok.cache?.read ?? 0) > 0 || (tok.cache?.write ?? 0) > 0)) { lastAssMsg = msgs[i] as AssistantMessage; break }
         }
         // 取最后一条有数据消息的总输入（含缓存读/写）作为当前 context 大小
+        dist.reasoning = subtree.reasoning
+        dist.agent = Math.max(0, subtree.subagentTokens - Math.max(0, subtree.reasoning - rootTotals.reasoning))
         dist.apiInput = num(lastAssMsg?.tokens?.input) + num(lastAssMsg?.tokens?.cache?.read) + num(lastAssMsg?.tokens?.cache?.write)
         dist.apiOutput = num(lastAssMsg?.tokens?.output)
         // 本回合（最后一条有数据消息所在的 parentID 链）的 API 调用次数与末次成本。
@@ -337,7 +372,9 @@ export function TokenCachePanel(props: {
         }
         hasDistData = dist.system + dist.user + dist.agent + dist.toolCall + dist.toolResult > 0 || dist.apiOutput > 0 || dist.apiInput > 0 || dist.reasoning > 0
       } catch {}
-      const finalDist = hasDistData ? dist : lastDist(), finalHasDist = hasDistData || lastHasDist()
+      // the last snapshot is reused only for the session it was taken from
+      const useLast = !hasDistData && lastHasDist() && lastDist().sid === sid
+      const finalDist = useLast ? lastDist() : dist, finalHasDist = hasDistData || useLast
       const skills = [...loadedSkills.values()]
       return { finalDist, finalHasDist, skills }
     })
@@ -347,7 +384,7 @@ export function TokenCachePanel(props: {
       inputRate, cacheReadRate, cacheWriteRate, hasPricing,
       hasData: read > 0 || write > 0 || input > 0 || output > 0 || cost > 0,
       trend, hasTrendData, providerName, sessionHitRate,
-      dist: distData.finalDist, hasDistData: distData.finalHasDist,
+      dist: distData.finalDist, hasDistData: distData.finalHasDist, distSid: sid,
       skills: distData.skills, hasSkills: distData.skills.length > 0,
     })
   })
@@ -361,10 +398,10 @@ export function TokenCachePanel(props: {
   createEffect(() => {
     const d = data()
     if (d.hasDistData) {
-      setLastDist({ ...d.dist })
+      setLastDist({ ...d.dist, sid: d.distSid })
       setLastHasDist(true)
       // Also persist across component remounts (view switches)
-      try { props.api.kv.set(`${KV_PREFIX}.dist_snapshot`, { ...d.dist }) } catch {}
+      try { props.api.kv.set(`${KV_PREFIX}.dist_snapshot`, { ...d.dist, sid: d.distSid }) } catch {}
     }
   })
 
@@ -430,8 +467,8 @@ export function TokenCachePanel(props: {
         setBorderVisible(bv !== false)
         // Restore distribution snapshot so the token distribution block
         // doesn't blank out while api.state.part() re-hydrates.
-        const cachedDist = props.api.kv.get<TokenDist>(`${KV_PREFIX}.dist_snapshot`)
-        if (cachedDist) {
+        const cachedDist = props.api.kv.get<TokenDist & { sid?: string }>(`${KV_PREFIX}.dist_snapshot`)
+        if (cachedDist?.sid) {
           setLastDist(cachedDist)
           setLastHasDist(true)
         }
@@ -471,11 +508,14 @@ export function TokenCachePanel(props: {
       clearTimeout(partTimer)
       partTimer = setTimeout(() => setPartVersion((v) => v + 1), 100)
     }
-    const unsubPart = props.api.event.on("message.part.updated", () => { bumpPartVersion(); setRefreshTick(v => v + 1) })
-    const unsubMsg = props.api.event.on("message.updated", () => { bumpPartVersion(); setRefreshTick(v => v + 1) })
-    const unsubSession = props.api.event.on("session.updated", () => { setRefreshTick(v => v + 1) })
+    const unsubPart = props.api.event.on("message.part.updated", () => { bumpPartVersion(); bumpRefresh() })
+    const unsubMsg = props.api.event.on("message.updated", () => { bumpPartVersion(); bumpRefresh() })
+    const unsubSession = props.api.event.on("session.updated", () => { bumpRefresh() })
+    const eventId = (e: any) => e?.properties?.sessionID ?? e?.properties?.info?.id ?? e?.sessionID ?? e?.info?.id ?? e?.data?.sessionID ?? e?.data?.info?.id ?? e?.id
+    const unsubSessionCreated = props.api.event.on("session.created", (e) => { const id = eventId(e); if (typeof id === "string") syncRequested.delete(id); bumpRefresh() })
+    const unsubSessionDeleted = props.api.event.on("session.deleted", (e) => { const id = eventId(e); if (typeof id === "string") syncRequested.delete(id); bumpRefresh() })
     setRefreshTick(v => v + 1)
-    onCleanup(() => { clearTimeout(partTimer); unsubPart(); unsubMsg(); unsubSession() })
+    onCleanup(() => { clearTimeout(partTimer); unsubPart(); unsubMsg(); unsubSession(); unsubSessionCreated(); unsubSessionDeleted() })
   })
 
   // ── colours ──

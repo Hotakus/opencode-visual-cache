@@ -14,9 +14,7 @@ import type {
 } from "@opencode-ai/plugin/tui"
 import type { UserMessage, AssistantMessage, Message } from "@opencode-ai/sdk"
 import type {
-  Part,
   TextPart,
-  ToolPart,
   FilePart,
   ReasoningPart,
 } from "@opencode-ai/sdk/v2"
@@ -25,6 +23,7 @@ import { PLUGIN_VERSION } from "./_version"
 import { balanceProviders, getBalanceProvider, maskKey, matchBalanceProvider, type BalanceEntry, type BalanceProvider } from "./balance-providers"
 import { LANG_META, createT, detectLang, type LangCode } from "./i18n"
 import {
+  aggregateSubtreeTotals, discoverDescendantSessions, extractSubagentSessionId, throttle, type AggregateOpts,
   MAX_SAT, FALLBACK, CURRENCIES, DEFAULT_RATES,
   charColumns, visualWidth, visualPadEnd, truncateVisual, progressBar,
   fmt, num, fmtCost, fmtCompact, formatBalanceAmount, formatBalanceText,
@@ -33,7 +32,7 @@ import {
   type TokenDist,
 } from "./core"
 import { TokenCachePanel } from "./panel/TokenCachePanel"
-import type { PanelSignals, BalanceState } from "./panel/panel-api"
+import type { PanelApi, PanelSession, PanelSignals, BalanceState } from "./panel/panel-api"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -178,34 +177,118 @@ function keyShortcut(api: TuiPluginApi, command: string, fallback: string): stri
  * 通过 ui.Prompt 的 hint prop 注入——宿主右侧的 token/commands 提示自动保留，
  * 三合一信息与路径同行显示在中间位置。
  */
+const v1Trackers = new WeakMap<object, { listSessions: () => readonly PanelSession[]; tick: () => number; sync: () => Promise<void>; isDeleted: (sid: string) => boolean }>()
+
+function getV1SessionTracker(api: TuiPluginApi) {
+  const cached = v1Trackers.get(api)
+  if (cached) return cached
+
+  const sessions = new Map<string, PanelSession>()
+  let revision = 0
+  const revisions = new Map<string, number>()
+  const deleted = new Set<string>()
+  const [tick, setTick] = createSignal(0)
+  const bumpTick = throttle(() => setTick((v) => v + 1))
+  const record = (s: any, at = ++revision) => {
+    const seen = new Set<string>()
+    while (typeof s?.id === "string" && s.id && !seen.has(s.id)) {
+      seen.add(s.id)
+      if (deleted.has(s.id) || at < (revisions.get(s.id) ?? 0)) break
+      revisions.set(s.id, at)
+      sessions.set(s.id, s)
+      const p = s.parentID
+      if (typeof p !== "string" || !p || seen.has(p)) break
+      s = api.state?.session?.get?.(p)
+    }
+  }
+  const recordById = (id: unknown) => {
+    if (typeof id === "string" && id) record(api.state?.session?.get?.(String(id)))
+  }
+  const ingest = (res: any, at: number) => {
+    const items = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []
+    let hasId = false
+    for (const s of items) {
+      if (typeof s?.id === "string" && s.id) hasId = true
+      record(s, at)
+    }
+    return hasId
+  }
+
+  const sync = async () => {
+    const at = ++revision
+    try {
+      const r = await (api.client as any)?.session?.list?.()
+      if (ingest(r, at)) setTick((v) => v + 1)
+    } catch {}
+  }
+  if (typeof api.event?.on === "function") {
+    const onSession = (e: any) => {
+      record(e?.properties?.info ?? e?.info ?? e)
+      recordById(e?.properties?.sessionID ?? e?.sessionID)
+      bumpTick()
+    }
+    api.event.on("session.created", (e: any) => {
+      const s = e?.properties?.info ?? e?.info ?? e
+      const id = s?.id ?? e?.properties?.sessionID ?? e?.sessionID
+      if (typeof id === "string") deleted.delete(id)
+      onSession(e)
+    })
+    api.event.on("session.updated", onSession)
+    api.event.on("session.deleted", (e: any) => {
+      const id = e?.properties?.sessionID ?? e?.properties?.info?.id ?? e?.sessionID
+      if (typeof id === "string") {
+        deleted.add(id)
+        revisions.set(id, ++revision)
+        sessions.delete(id)
+      }
+      bumpTick()
+    })
+    const onMessage = (e: any) => {
+      recordById(e?.properties?.sessionID ?? e?.properties?.info?.sessionID ?? e?.properties?.part?.sessionID ?? e?.sessionID)
+      bumpTick()
+    }
+    api.event.on("message.updated", onMessage)
+    api.event.on("message.part.updated", onMessage)
+    api.event.on("message.removed", onMessage)
+    api.event.on("message.part.removed", onMessage)
+  }
+
+  const listSessions = (): readonly PanelSession[] => {
+    const m = new Map<string, PanelSession>(sessions)
+    try {
+      for (const s of (api.state?.session as { list?: () => readonly PanelSession[] })?.list?.() ?? []) if (s?.id && !deleted.has(s.id)) m.set(s.id, s)
+    } catch {}
+    for (const [id, prev] of m) {
+      try {
+        const live = api.state?.session?.get?.(id)
+        if (live) m.set(id, { ...prev, ...live })
+      } catch {}
+    }
+    return [...m.values()]
+  }
+  const tracker = { listSessions, tick, sync, isDeleted: (sid: string) => deleted.has(sid) }
+  v1Trackers.set(api, tracker)
+  return tracker
+}
+
 function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sessionId: string }): JSX.Element {
   const KV_PREFIX = "cache_panel"
   const t = createT(() => props.signals.langCode())
 
   const sid = props.sessionId
+  const tracker = getV1SessionTracker(props.api)
+  const subtreeOpts: AggregateOpts = { getMessages: (x) => props.api.state.session.messages(x), getToolParts: (m) => { try { return props.api.state.part(m.id).filter((p) => { const id = extractSubagentSessionId(p as Record<string, any>); return id === undefined || !tracker.isDeleted(id) }) } catch { return [] } }, getSession: (x) => props.api.state.session.get?.(x), listSessions: tracker.listSessions }
+
+  // one subtree read per throttled tick, shared by the token total and the cost; a message event alone never reruns it
+  const subtreeTotals = createMemo(() => { void tracker.tick(); return sid ? untrack(() => aggregateSubtreeTotals(sid, subtreeOpts)) : undefined })
 
   // ── 命中率（单条口径：最后一条有 token 的 assistant 消息）+ token 汇总 ──
   const stats = createMemo(() => {
     const id = sid
     if (!id) return null
     const msgs = props.api.state.session.messages(id) as Message[]
-    const session = typeof props.api.state.session.get === "function"
-      ? props.api.state.session.get(id)
-      : undefined
-    let input = session?.tokens?.input ?? 0
-    let read = session?.tokens?.cache?.read ?? 0
-    let write = session?.tokens?.cache?.write ?? 0
-    // 旧 SDK 无 session 聚合字段 → 遍历消息累加（与侧边栏 fallback 一致）
-    if (session?.tokens == null) {
-      for (const m of msgs) {
-        if (m.role !== "assistant") continue
-        const tk = (m as AssistantMessage).tokens
-        if (!tk) continue
-        input += num(tk.input)
-        read += num(tk.cache?.read)
-        write += num(tk.cache?.write)
-      }
-    }
+    const subtree = subtreeTotals()
+    const tokens = subtree ? subtree.input + subtree.read + subtree.write + subtree.output + subtree.reasoning : 0
     // 从后往前取最后两条有 token 数据的 assistant 消息 → 单条命中率 + 趋势
     // 分母含缓存写（业界口径：read / (input+read+write)）
     let hitRate = -1, prevHitRate = -1
@@ -222,7 +305,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
       prevHitRate = rate
       break
     }
-    return { hitRate, prevHitRate, input, read, write }
+    return { hitRate, prevHitRate, tokens }
   })
 
   // 余额查询状态为共享信号（PanelSignals.balanceState），由 tui() 统一轮询
@@ -332,7 +415,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
       segs.push({ text: " " + (tr > 0 ? "\u2191" : "\u2193") + Math.abs(tr).toFixed(1) + "%", color: tr > 0 ? pal().success : pal().error })
     }
     segs.push({ text: " \u00b7 " + t("barTok") + " ", color: pal().muted })
-    segs.push({ text: s ? fmtCompact(s.input + s.read + s.write) : "--", color: pal().text })
+    segs.push({ text: s ? fmtCompact(s.tokens) : "--", color: pal().text })
     if (!props.signals.balanceUnsupported()) {
       segs.push({ text: " \u00b7 " + t("barBal") + " ", color: pal().muted })
       segs.push({ text: balanceText(), color: pal().text })
@@ -349,7 +432,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
   // 宿主右侧 usage 文本复刻（1.18.16 Prompt 口径）：
   // 最后一条 output>0 的 assistant 消息 → tokens 合计格式化 + 模型 context limit 百分比 + session 累计费用
   const sessionCost = createMemo(() => {
-    try { return num(props.api.state.session.get(sid)?.cost) } catch { return 0 }
+    try { return subtreeTotals()?.cost ?? 0 } catch { return 0 }
   })
   const usageText = createMemo(() => {
     const id = sid
@@ -434,6 +517,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
 }
 function createSidebarSlot(api: TuiPluginApi, signals: PanelSignals): TuiSlotPlugin {
   let lastSlotSid = ""
+  const panelApi: PanelApi = { ...api, state: new Proxy(api.state, { get: (t, k, r) => k === "session" ? new Proxy(t.session, { get: (st, sk, sr) => sk === "list" ? getV1SessionTracker(api).listSessions : sk === "isDeleted" ? getV1SessionTracker(api).isDeleted : Reflect.get(st, sk, sr) }) : Reflect.get(t, k, r) }) }
   return {
     order: 55,
     slots: {
@@ -449,7 +533,7 @@ function createSidebarSlot(api: TuiPluginApi, signals: PanelSignals): TuiSlotPlu
         return (
           <TokenCachePanel
             theme={ctx.theme.current}
-            api={api}
+            api={panelApi}
             sessionId={input.session_id}
             signals={signals}
           />
@@ -564,7 +648,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
   // 关闭底部状态栏即让出该 slot：宿主对 session_prompt 使用 replace 模式，多个重建者的
   // 输出会被全部渲染（不互相覆盖），与同样重建 session_prompt 的插件并存会产生重复输入框。
   // slot 注册无法注销，故是否占用须在启动时确定——改动需重启 TUI 生效。
+  const tracker = getV1SessionTracker(api)
   await kvReady(api)
+  void tracker.sync()
   // 默认关闭（让出）：仅当用户显式开启时才占用输入框插槽
   let promptRebuild = false
   try {
@@ -997,34 +1083,12 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         // ── 扫描当前主 session 的子代理 session ID 列表 ──
         const rt = api.route.current
         const parentSid = rt.name === "session" && rt.params ? String(rt.params.sessionID) : ""
-        const SUBAGENT_TOOLS = new Set(["task", "delegate", "call_omo_agent"])
 
         interface ChildEntry { title: string; value: string; description: string }
         const children: ChildEntry[] = []
         if (parentSid) {
           try {
-            const msgs = api.state.session.messages(parentSid)
-            for (const msg of msgs) {
-              if (msg.role !== "assistant") continue
-              let parts: readonly Part[] = []
-              try { parts = api.state.part(msg.id) } catch {}
-              for (const p of parts) {
-                if (p.type !== "tool") continue
-                const tool = String((p as ToolPart).tool ?? "")
-                if (!SUBAGENT_TOOLS.has(tool)) continue
-                const st = (p as any).state as Record<string, unknown> | undefined
-                const stMeta = st?.metadata as Record<string, unknown> | undefined
-                const subSid = stMeta?.session_id ?? stMeta?.sessionId
-                if (!subSid) continue
-                const sidStr = String(subSid)
-                const input = st?.input as Record<string, unknown> | undefined
-                const agent = String((p as any).subagent_type ?? input?.subagent_type ?? input?.category ?? tool)
-                const prompt = String(input?.prompt ?? "")
-                const desc = input?.description ? String(input.description) : ""
-                const title = desc || prompt.replace(/\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || agent
-                children.push({ title, value: sidStr, description: `${agent} · ${sidStr.slice(0, 24)}…` })
-              }
-            }
+            for (const c of discoverDescendantSessions(parentSid, { getMessages: (x) => api.state.session.messages(x), getToolParts: (m) => { try { return api.state.part(m.id).filter((p) => { const id = extractSubagentSessionId(p as Record<string, any>); return id === undefined || !tracker.isDeleted(id) }) } catch { return [] } }, listSessions: tracker.listSessions })) children.push({ title: c.title, value: c.id, description: c.agent + " · " + c.id.slice(0, 24) + "…" })
           } catch {}
         }
 

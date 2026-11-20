@@ -66,6 +66,7 @@ export interface Data {
     list(): SessionInfo[]
     cost(sessionID: string): number
     status(sessionID: string): string
+    missing?(sessionID: string): boolean
     readonly message: {
       list(sessionID: string): MessageInfo[]
       sync(sessionID: string): Promise<void>

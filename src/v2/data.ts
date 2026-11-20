@@ -1,5 +1,5 @@
 import type { Context, MessageInfo } from "./types"
-import { num } from "../core"
+import { num, aggregateSubtreeTotals, withSnapshot, type AggregateOpts } from "../core"
 
 /** 汇总一个会话的 token 用量与费用（V2 adapter → 同构模型）。 */
 export interface SessionStats {
@@ -12,47 +12,12 @@ export interface SessionStats {
   hasData: boolean
 }
 
+function subtreeOpts(context: Context, isDeleted?: (id: string) => boolean): AggregateOpts { return { getMessages: (id) => context.data.session.message.list(id) ?? [], getToolParts: (m) => (Array.isArray(m?.content) ? m.content : []), getSession: (id) => context.data.session.get(id), listSessions: () => context.data.session.list(), isDeleted } }
+
 /** 从 messages 汇总 token：统计全部 assistant 消息的 API 精确值。 */
 export function collectSessionStats(context: Context, sessionID: string): SessionStats {
-  const msgs = context.data.session.message.list(sessionID) ?? []
-  let input = 0
-  let output = 0
-  let cacheRead = 0
-  let cacheWrite = 0
-  let reasoning = 0
-  let cost = 0
-  let hasData = false
-
-  for (const m of msgs) {
-    if (m.type !== "assistant") continue
-    const t = m.tokens
-    if (!t) continue
-    input += num(t.input)
-    output += num(t.output)
-    reasoning += num(t.reasoning)
-    cacheRead += num(t.cache?.read)
-    cacheWrite += num(t.cache?.write)
-    hasData = true
-  }
-  // 会话级费用优先（V2 提供 cost()），消息级 cost 兜底（结构未知，宽松读取）
-  const sessionCost = context.data.session.cost(sessionID)
-  if (Number.isFinite(sessionCost) && sessionCost > 0) cost = sessionCost
-  else {
-    for (const m of msgs) {
-      if (m.type !== "assistant" || m.cost == null) continue
-      const c = m.cost as { amount?: unknown; total?: unknown } | { amount?: unknown } | number
-      if (typeof c === "number" && Number.isFinite(c)) cost += c
-      else {
-        const amt = (c as { amount?: unknown }).amount
-        if (typeof amt === "number" && Number.isFinite(amt)) cost += amt
-        else if (typeof amt === "string") {
-          const n = parseFloat(amt)
-          if (Number.isFinite(n)) cost += n
-        }
-      }
-    }
-  }
-  return { input, output, cacheRead, cacheWrite, reasoning, cost, hasData }
+  const t = aggregateSubtreeTotals(sessionID, subtreeOpts(context))
+  return { input: t.input, output: t.output, cacheRead: t.read, cacheWrite: t.write, reasoning: t.reasoning, cost: t.cost, hasData: t.hasData }
 }
 
 /** 缓存命中率（0–100）：缓存读 /（新鲜输入 + 缓存读 + 缓存写），与 V1 口径一致。 */
@@ -72,26 +37,8 @@ export function inputTotal(stats: SessionStats): number {
 export function collectLastHitRate(context: Context, sessionID: string): {
   hitRate: number
   prevHitRate: number
-  input: number
-  read: number
-  write: number
 } {
   const msgs = context.data.session.message.list(sessionID) ?? []
-  const session = context.data.session.get(sessionID) as { tokens?: { input?: number; cache?: { read?: number; write?: number } } } | undefined
-  let input = num(session?.tokens?.input)
-  let read = num(session?.tokens?.cache?.read)
-  let write = num(session?.tokens?.cache?.write)
-  // 无 session 聚合字段 → 遍历消息累加（与 V1 fallback 一致）
-  if (session?.tokens == null) {
-    for (const m of msgs) {
-      if (m.type !== "assistant") continue
-      const t = m.tokens
-      if (!t) continue
-      input += num(t.input)
-      read += num(t.cache?.read)
-      write += num(t.cache?.write)
-    }
-  }
   let hitRate = -1, prevHitRate = -1
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
@@ -106,7 +53,13 @@ export function collectLastHitRate(context: Context, sessionID: string): {
     prevHitRate = rate
     break
   }
-  return { hitRate, prevHitRate, input, read, write }
+  return { hitRate, prevHitRate }
+}
+
+/** Token total of a session and all its sub-agents; with `rows` (the adapter's snapshot) no descendant history is read. */
+export function collectSubtreeTokens(context: Context, sessionID: string, isDeleted?: (id: string) => boolean, rows?: Parameters<typeof withSnapshot>[2]): number {
+  const t = aggregateSubtreeTotals(sessionID, withSnapshot(subtreeOpts(context, isDeleted), sessionID, rows))
+  return t.input + t.read + t.write + t.output + t.reasoning
 }
 
 export type { MessageInfo }

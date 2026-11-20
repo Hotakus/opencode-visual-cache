@@ -1,6 +1,6 @@
 import type { Context, KeymapCommand } from "./types"
 import type { PanelApi, PanelSignals } from "../panel/panel-api"
-import { CURRENCIES, DEFAULT_RATES, visualPadEnd } from "../core"
+import { CURRENCIES, DEFAULT_RATES, discoverDescendantSessions, visualPadEnd } from "../core"
 import { balanceProviders, getBalanceProvider, maskKey, type BalanceProvider } from "../balance-providers"
 import { LANG_META, createT, type LangCode } from "../i18n"
 import { resolveCredentialToken } from "./credentials"
@@ -381,31 +381,12 @@ export function makeCommands(context: Context, api: PanelApi, signals: PanelSign
       run: async () => {
         // ── 扫描当前主 session 的子代理 session ID 列表 ──
         const parentSid = currentSessionID(context)
-        const SUBAGENT_TOOLS = new Set(["task", "delegate", "call_omo_agent"])
 
         interface ChildEntry { title: string; value: string; description: string }
         const children: ChildEntry[] = []
         if (parentSid) {
           try {
-            const msgs = api.state.session.messages(parentSid)
-            for (const msg of msgs) {
-              if (msg.role !== "assistant") continue
-              for (const p of extractToolParts(msg)) {
-                const tool = String(p.tool ?? "")
-                if (!SUBAGENT_TOOLS.has(tool)) continue
-                const st = p.state as Record<string, unknown> | undefined
-                const stMeta = st?.metadata as Record<string, unknown> | undefined
-                const subSid = stMeta?.session_id ?? stMeta?.sessionId
-                if (!subSid) continue
-                const sidStr = String(subSid)
-                const input = st?.input as Record<string, unknown> | undefined
-                const agent = String(p.subagent_type ?? input?.subagent_type ?? input?.category ?? tool)
-                const prompt = String(input?.prompt ?? "")
-                const desc = input?.description ? String(input.description) : ""
-                const title = desc || prompt.replace(/\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || agent
-                children.push({ title, value: sidStr, description: `${agent} · ${sidStr.slice(0, 24)}…` })
-              }
-            }
+            for (const c of discoverDescendantSessions(parentSid, { getMessages: (id) => api.state.session.messages(id), getToolParts: extractToolParts, listSessions: () => context.data.session.list(), isDeleted: api.state.session.isDeleted })) children.push({ title: c.title, value: c.id, description: c.agent + " · " + c.id.slice(0, 24) + "…" })
           } catch {}
         }
 
