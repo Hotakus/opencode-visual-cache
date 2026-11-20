@@ -194,7 +194,7 @@ export function TokenCachePanel(props: {
   })
 
   // Sub-agent totals are re-read on a new snapshot, when the viewed session's history has loaded or on a provider change (with no
-  // snapshot, as on V1: on the throttled refresh), never on every message event (PB2-26). Only the viewed session loads its history.
+  // snapshot, as on V1: on the throttled refresh), never on every message event. Only the viewed session loads its history.
   const subtreeData = createMemo(() => {
     const sid = props.signals.overrideSessionId() ?? props.sessionId
     const rows = props.api.state.session.subtree?.(sid)
