@@ -279,7 +279,7 @@ function BottomStatusBar(props: { api: TuiPluginApi; signals: PanelSignals; sess
   const tracker = getV1SessionTracker(props.api)
   const subtreeOpts: AggregateOpts = { getMessages: (x) => props.api.state.session.messages(x), getToolParts: (m) => { try { return props.api.state.part(m.id).filter((p) => { const id = extractSubagentSessionId(p as Record<string, any>); return id === undefined || !tracker.isDeleted(id) }) } catch { return [] } }, getSession: (x) => props.api.state.session.get?.(x), listSessions: tracker.listSessions }
 
-  // one subtree read per throttled tick, shared by the token total and the cost; a message event alone never reruns it (PB2-26)
+  // one subtree read per throttled tick, shared by the token total and the cost; a message event alone never reruns it
   const subtreeTotals = createMemo(() => { void tracker.tick(); return sid ? untrack(() => aggregateSubtreeTotals(sid, subtreeOpts)) : undefined })
 
   // ── 命中率（单条口径：最后一条有 token 的 assistant 消息）+ token 汇总 ──
